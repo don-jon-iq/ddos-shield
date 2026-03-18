@@ -41,11 +41,15 @@ from database import async_session_factory, get_session, init_db
 from detector import run_detection
 from mac_vendor import is_vm_mac, lookup_vendor
 from mitigator import (
+    block_ip,
     block_mac,
     get_block_expiry,
     isolate_mac,
+    list_blocked_ips,
     rate_limit_mac,
+    rescue_block,
     suggested_action,
+    unblock_ip,
     unblock_mac,
 )
 from models import AttackLog, AttackType, BlockedMAC, Device, DeviceStatus, Severity
@@ -278,6 +282,12 @@ app.add_middleware(
 
 class MACActionRequest(BaseModel):
     mac_address: str
+    ip_address: str = ""
+    reason: str = ""
+
+
+class IPActionRequest(BaseModel):
+    ip_address: str
     reason: str = ""
 
 
@@ -427,10 +437,9 @@ async def api_block_mac(
     _user: str = Depends(get_current_user),
     session=Depends(get_session),
 ):
-    """Block a MAC address."""
-    result = await block_mac(req.mac_address, reason=req.reason)
+    """Block a MAC address (and optionally its IP)."""
+    result = await block_mac(req.mac_address, reason=req.reason, ip=req.ip_address)
 
-    # Update DB
     mac = req.mac_address.upper()
     dev_result = await session.execute(select(Device).where(Device.mac_address == mac))
     device = dev_result.scalar_one_or_none()
@@ -454,8 +463,8 @@ async def api_unblock_mac(
     _user: str = Depends(get_current_user),
     session=Depends(get_session),
 ):
-    """Unblock a MAC address."""
-    result = await unblock_mac(req.mac_address)
+    """Unblock a MAC address (and optionally its IP)."""
+    result = await unblock_mac(req.mac_address, ip=req.ip_address)
 
     mac = req.mac_address.upper()
     dev_result = await session.execute(select(Device).where(Device.mac_address == mac))
@@ -474,13 +483,31 @@ async def api_unblock_mac(
     return result
 
 
+@app.post("/api/mitigate/block-ip", tags=["Mitigation"])
+async def api_block_ip(
+    req: IPActionRequest,
+    _user: str = Depends(get_current_user),
+):
+    """Block traffic from a specific IP address."""
+    return await block_ip(req.ip_address, reason=req.reason)
+
+
+@app.post("/api/mitigate/unblock-ip", tags=["Mitigation"])
+async def api_unblock_ip(
+    req: IPActionRequest,
+    _user: str = Depends(get_current_user),
+):
+    """Unblock a specific IP address."""
+    return await unblock_ip(req.ip_address)
+
+
 @app.post("/api/mitigate/rate-limit", tags=["Mitigation"])
 async def api_rate_limit(
     req: MACActionRequest,
     _user: str = Depends(get_current_user),
 ):
     """Apply rate limiting to a MAC address."""
-    return await rate_limit_mac(req.mac_address)
+    return await rate_limit_mac(req.mac_address, ip=req.ip_address)
 
 
 @app.post("/api/mitigate/isolate", tags=["Mitigation"])
@@ -490,7 +517,7 @@ async def api_isolate(
     session=Depends(get_session),
 ):
     """Fully isolate a MAC address."""
-    result = await isolate_mac(req.mac_address)
+    result = await isolate_mac(req.mac_address, ip=req.ip_address)
 
     mac = req.mac_address.upper()
     dev_result = await session.execute(select(Device).where(Device.mac_address == mac))
@@ -502,12 +529,47 @@ async def api_isolate(
     return result
 
 
+@app.post("/api/mitigate/rescue", tags=["Mitigation"])
+async def api_rescue(
+    req: MACActionRequest,
+    _user: str = Depends(get_current_user),
+    session=Depends(get_session),
+):
+    """
+    Emergency rescue — one-click block of an attacker (MAC + IP).
+
+    This is the "panic button" for the dashboard. It blocks the attacker
+    using every available method on the current platform.
+    """
+    result = await rescue_block(req.mac_address, ip=req.ip_address, reason=req.reason)
+
+    mac = req.mac_address.upper()
+    dev_result = await session.execute(select(Device).where(Device.mac_address == mac))
+    device = dev_result.scalar_one_or_none()
+    if device:
+        device.status = DeviceStatus.BLOCKED
+
+    blocked = BlockedMAC(
+        mac_address=mac,
+        expires_at=get_block_expiry(),
+        reason=req.reason or "Emergency rescue",
+    )
+    session.add(blocked)
+    await session.commit()
+
+    return result
+
+
 @app.get("/api/blocked", tags=["Mitigation"])
-async def list_blocked(session=Depends(get_session)):
-    """List all currently blocked MACs."""
+async def api_list_blocked(session=Depends(get_session)):
+    """List all currently blocked MACs and IPs."""
     result = await session.execute(select(BlockedMAC))
-    blocked = result.scalars().all()
-    return [b.to_dict() for b in blocked]
+    blocked_macs = result.scalars().all()
+    blocked_ip_list = await list_blocked_ips()
+    return {
+        "blocked_macs": [b.to_dict() for b in blocked_macs],
+        "blocked_ips": blocked_ip_list,
+    }
 
 
 # ---------------------------------------------------------------------------

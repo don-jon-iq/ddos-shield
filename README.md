@@ -32,7 +32,7 @@ Real-time DDoS attack monitoring, detection, and mitigation dashboard built for 
 │                                                              │
 │  ┌──────────┐   ┌──────────┐   ┌────────────┐               │
 │  │ Sniffer  │──▶│ Detector │──▶│ Mitigator  │               │
-│  │ (Scapy / │   │ threshold│   │ ebtables / │               │
+│  │ (Scapy / │   │ threshold│   │ pfctl(mac) │               │
 │  │  Sim)    │   │ + z-score│   │ iptables   │               │
 │  └──────────┘   └──────────┘   └────────────┘               │
 │       │                                                      │
@@ -109,13 +109,146 @@ npm run dev
 # Login: admin / ddos-shield-2024
 ```
 
-### Option 3: Real Packet Capture (Linux, requires root)
+### Option 3: Real Packet Capture
 
 ```bash
-cd backend
-sudo SIMULATION_MODE=false SNIFFER_INTERFACE=eth0 \
-  .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+# macOS (monitoring VM bridge interface)
+sudo SIMULATION_MODE=false SNIFFER_INTERFACE=bridge0 ./start.sh
+
+# Linux (monitoring eth0)
+sudo SIMULATION_MODE=false SNIFFER_INTERFACE=eth0 ./start.sh
 ```
+
+## Real Network Monitoring (VM Lab Setup)
+
+DDoS Shield can monitor **real network traffic** in a VM lab environment. This setup is ideal for university demonstrations where an attacker machine sends real DDoS attacks to a VM, and DDoS Shield detects and blocks them.
+
+### Architecture
+
+```
+┌──────────────┐        ┌──────────────┐
+│  Attacker    │        │  Target VM   │
+│  Machine     │───────▶│  (victim)    │
+│  (hping3 /   │  LAN   │  (Ubuntu /   │
+│   scapy)     │        │   Windows)   │
+└──────────────┘        └──────────┬───┘
+                                   │ bridge0/vmnet
+                        ┌──────────┴───┐
+                        │  Host Mac    │
+                        │  running     │
+                        │  DDoS Shield │
+                        │  (monitors   │
+                        │   bridge IF) │
+                        └──────────────┘
+```
+
+### Step 1: Create a VM
+
+Use any hypervisor:
+- **UTM** (recommended for Apple Silicon Macs)
+- **VirtualBox** (Intel Macs)
+- **VMware Fusion**
+- **Parallels**
+
+Set the VM's network adapter to **Bridged Mode** so it gets a real IP on your LAN.
+
+### Step 2: Identify the Bridge Interface
+
+```bash
+# macOS — list interfaces
+ifconfig | grep -E "^(bridge|vmnet|vboxnet)"
+
+# Common interfaces:
+# bridge0    — macOS Thunderbolt Bridge / VM bridge
+# vmnet1     — VMware host-only
+# vmnet8     — VMware NAT
+# vboxnet0   — VirtualBox host-only
+```
+
+### Step 3: Configure DDoS Shield
+
+Edit `.env`:
+```env
+SIMULATION_MODE=false
+SNIFFER_INTERFACE=bridge0    # Your VM bridge interface
+
+# Sensitive thresholds for lab (detect attacks quickly)
+THRESH_SYN_PPS=50
+THRESH_UDP_PPS=200
+THRESH_ICMP_PPS=100
+THRESH_HTTP_PPS=80
+ZSCORE_THRESHOLD=2.5
+```
+
+### Step 4: Start DDoS Shield (requires sudo)
+
+```bash
+sudo ./start.sh
+```
+
+The startup script will:
+- Check for root permissions
+- Auto-detect VM interfaces
+- Show available interfaces
+- Start backend + frontend
+
+Open the dashboard at `http://localhost:5173`.
+
+### Step 5: Launch an Attack (from attacker machine)
+
+Use the included attack tools in `tools/`:
+
+```bash
+# Install scapy on the attacker machine
+pip install scapy
+
+# SYN Flood
+sudo python3 tools/syn_flood.py <VM_IP> -r 500
+
+# UDP Flood
+sudo python3 tools/udp_flood.py <VM_IP> -r 1000 -s 1024
+
+# ICMP Flood (ping flood)
+sudo python3 tools/icmp_flood.py <VM_IP> -r 500
+
+# Slowloris (HTTP, no root needed)
+python3 tools/slowloris.py <VM_IP> -n 200
+```
+
+Or use standard tools:
+```bash
+# hping3 SYN flood
+sudo hping3 -S --flood -p 80 <VM_IP>
+
+# ping flood
+sudo ping -f <VM_IP>
+```
+
+### Step 6: Watch and Respond
+
+1. The **Dashboard** shows live traffic spikes
+2. **Attack Alerts** appear with severity badges
+3. Click **Rescue Panel** to block the attacker
+4. Use the **"Rescue"** button for one-click emergency block (blocks by MAC + IP)
+5. Or use specific actions: Block, Rate Limit, Isolate
+
+### Mitigation on macOS
+
+On macOS, DDoS Shield uses `pfctl` (Packet Filter) to block attackers:
+- Maintains a pf table `ddos_blocked` with attacking IPs
+- Blocks traffic in both directions (inbound + outbound)
+- Rules are added dynamically and can be removed from the dashboard
+
+On Linux, it uses `ebtables` (Layer 2) and `iptables` (Layer 3).
+
+### Permissions Note
+
+Real mode requires elevated privileges:
+- **Packet capture** (Scapy) needs raw socket access → `sudo`
+- **pfctl** (macOS) needs root to modify firewall rules → `sudo`
+- **iptables/ebtables** (Linux) needs root → `sudo`
+
+In simulation mode, no special permissions are needed.
 
 ## Screenshots
 
@@ -164,11 +297,14 @@ The backend exposes a REST API at `/api/*` and a WebSocket at `/ws`.
 | GET | `/api/traffic` | No | Live traffic counters |
 | GET | `/api/attacks` | No | Query attack logs (paginated) |
 | GET | `/api/attacks/stats` | No | Aggregated attack stats |
-| POST | `/api/mitigate/block` | Yes | Block a MAC address |
-| POST | `/api/mitigate/unblock` | Yes | Unblock a MAC address |
+| POST | `/api/mitigate/block` | Yes | Block a MAC address (+ optional IP) |
+| POST | `/api/mitigate/unblock` | Yes | Unblock a MAC address (+ optional IP) |
+| POST | `/api/mitigate/block-ip` | Yes | Block a specific IP address |
+| POST | `/api/mitigate/unblock-ip` | Yes | Unblock a specific IP address |
 | POST | `/api/mitigate/rate-limit` | Yes | Rate-limit a MAC |
 | POST | `/api/mitigate/isolate` | Yes | Fully isolate a MAC |
-| GET | `/api/blocked` | No | List blocked MACs |
+| POST | `/api/mitigate/rescue` | Yes | Emergency one-click block (MAC + IP) |
+| GET | `/api/blocked` | No | List blocked MACs and IPs |
 | GET | `/api/interfaces` | No | Detected network interfaces |
 | GET | `/api/educational` | No | List attack types |
 | GET | `/api/educational/{type}` | No | Detailed attack explanation |
@@ -236,6 +372,12 @@ ddos-shield/
 │   ├── tailwind.config.js
 │   ├── nginx.conf            # Production reverse proxy config
 │   └── Dockerfile
+├── tools/                        # Attack simulation scripts (lab use)
+│   ├── syn_flood.py              # TCP SYN flood
+│   ├── udp_flood.py              # UDP flood
+│   ├── icmp_flood.py             # ICMP ping flood
+│   ├── slowloris.py              # Slowloris HTTP attack
+│   └── README.md                 # Attack tools documentation
 ├── docker-compose.yml
 ├── .env.example
 ├── .gitignore

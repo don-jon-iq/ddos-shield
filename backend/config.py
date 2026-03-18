@@ -111,8 +111,10 @@ class AppConfig:
     ws_broadcast_interval: float = float(os.getenv("WS_INTERVAL", "1.0"))
 
     # VM-specific network interface prefixes to auto-detect
+    # Includes both Linux (virbr, veth, docker) and macOS (bridge, vmnet, vboxnet)
     vm_interface_prefixes: FrozenSet[str] = frozenset(
-        {"virbr", "veth", "br-", "tap", "docker", "vnet"}
+        {"virbr", "veth", "br-", "tap", "docker", "vnet",
+         "bridge", "vmnet", "vboxnet", "utun"}
     )
 
 

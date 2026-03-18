@@ -24,13 +24,19 @@ Educational note:
   When SIMULATION_MODE=true, we skip real packet capture and instead
   generate synthetic traffic that mimics realistic network patterns,
   including periodic attack bursts.
+
+  **Real mode on macOS:**
+  Requires sudo for raw packet capture. Auto-detects VM bridge
+  interfaces (bridge0, vmnet*, utun*) if SNIFFER_INTERFACE is empty.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 import random
+import subprocess
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -56,10 +62,95 @@ class _MacCounters:
     arp: int = 0
     total_bytes: int = 0
     ip_address: str = ""
+    dst_ip: str = ""
 
     @property
     def total(self) -> int:
         return self.syn + self.udp + self.icmp + self.http + self.arp
+
+
+# ---------------------------------------------------------------------------
+# macOS / Linux interface auto-detection
+# ---------------------------------------------------------------------------
+
+# Interface name prefixes that indicate VM/bridge networking
+_MACOS_VM_PREFIXES = ("bridge", "vmnet", "utun", "vboxnet", "tap")
+_LINUX_VM_PREFIXES = ("virbr", "veth", "br-", "tap", "docker", "vnet")
+
+
+def auto_detect_interface() -> str | None:
+    """
+    Auto-detect the best network interface for packet capture.
+
+    Priority order:
+      1. Configured SNIFFER_INTERFACE (if non-empty)
+      2. VM bridge interfaces (bridge0, vmnet*, etc.)
+      3. First active non-loopback interface
+
+    Returns the interface name, or None to let Scapy use the default.
+    """
+    configured = config.sniffer.interface.strip()
+    if configured:
+        logger.info("Using configured interface: %s", configured)
+        return configured
+
+    system = platform.system()
+    prefixes = _MACOS_VM_PREFIXES if system == "Darwin" else _LINUX_VM_PREFIXES
+
+    try:
+        if system == "Darwin":
+            interfaces = _list_macos_interfaces()
+        else:
+            interfaces = _list_linux_interfaces()
+    except Exception as exc:
+        logger.warning("Interface detection failed: %s", exc)
+        return None
+
+    # Prefer VM/bridge interfaces that are UP
+    for name, is_up in interfaces:
+        if is_up and any(name.startswith(p) for p in prefixes):
+            logger.info("Auto-detected VM interface: %s", name)
+            return name
+
+    # Fall back to first non-loopback UP interface
+    for name, is_up in interfaces:
+        if is_up and name != "lo" and name != "lo0":
+            logger.info("Auto-detected interface: %s", name)
+            return name
+
+    logger.warning("No suitable interface found — Scapy will use default")
+    return None
+
+
+def _list_macos_interfaces() -> list[tuple[str, bool]]:
+    """List (name, is_up) for all macOS network interfaces."""
+    output = subprocess.check_output(["ifconfig"], text=True, timeout=5)
+    interfaces: list[tuple[str, bool]] = []
+    for line in output.splitlines():
+        if line and not line[0].isspace():
+            name = line.split(":")[0]
+            is_up = "UP" in line
+            interfaces.append((name, is_up))
+    return interfaces
+
+
+def _list_linux_interfaces() -> list[tuple[str, bool]]:
+    """List (name, is_up) for all Linux network interfaces."""
+    import os
+
+    interfaces: list[tuple[str, bool]] = []
+    net_dir = "/sys/class/net"
+    if not os.path.isdir(net_dir):
+        return interfaces
+    for name in sorted(os.listdir(net_dir)):
+        operstate_path = f"{net_dir}/{name}/operstate"
+        try:
+            with open(operstate_path) as f:
+                is_up = f.read().strip() == "up"
+        except OSError:
+            is_up = False
+        interfaces.append((name, is_up))
+    return interfaces
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +164,10 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
     Educational note:
       Scapy's `sniff()` blocks, so we run it in a thread and use
       `stop_filter` to check our asyncio stop event.
+      On macOS, requires sudo. On Linux, requires root or CAP_NET_RAW.
     """
     try:
-        from scapy.all import ARP, ICMP, IP, TCP, UDP, Ether, sniff  # type: ignore
+        from scapy.all import ARP, ICMP, IP, TCP, UDP, Ether, sniff, conf  # type: ignore
     except ImportError:
         logger.error(
             "Scapy not installed. Install with: pip install scapy  "
@@ -96,13 +188,16 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
             return
 
         src_mac = pkt[Ether].src.upper()
+        dst_mac = pkt[Ether].dst.upper()
         c = counters.setdefault(src_mac, _MacCounters())
         pkt_len = len(pkt)
         c.total_bytes += pkt_len
 
-        # Capture source IP address if present
-        if pkt.haslayer(IP) and not c.ip_address:
-            c.ip_address = pkt[IP].src
+        # Capture source and destination IP addresses
+        if pkt.haslayer(IP):
+            if not c.ip_address:
+                c.ip_address = pkt[IP].src
+            c.dst_ip = pkt[IP].dst
 
         if pkt.haslayer(ARP):
             c.arp += 1
@@ -119,18 +214,31 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
         elif pkt.haslayer(ICMP):
             c.icmp += 1
 
-    iface = config.sniffer.interface or None
+    iface = auto_detect_interface()
     bpf = config.sniffer.bpf_filter or None
+
+    # On macOS, configure Scapy to use libpcap (default on Darwin)
+    if platform.system() == "Darwin":
+        conf.use_pcap = True
 
     logger.info("Starting real packet capture on interface=%s, filter=%s", iface, bpf)
 
-    sniff(
-        iface=iface,
-        filter=bpf,
-        prn=_process_packet,
-        store=False,
-        stop_filter=lambda _: stop_event.is_set(),
-    )
+    try:
+        sniff(
+            iface=iface,
+            filter=bpf,
+            prn=_process_packet,
+            store=False,
+            stop_filter=lambda _: stop_event.is_set(),
+        )
+    except PermissionError:
+        logger.error(
+            "Permission denied for packet capture. "
+            "Run with sudo: sudo python main.py  "
+            "Or enable SIMULATION_MODE=true in .env"
+        )
+    except OSError as exc:
+        logger.error("Packet capture failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

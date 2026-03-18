@@ -5,12 +5,19 @@ Educational note:
   Virtual machines communicate through virtual network interfaces
   created by the hypervisor.  Common types include:
 
+  **Linux:**
   - **virbr**  – libvirt virtual bridge (e.g. virbr0)
   - **veth**   – Virtual Ethernet pairs used by Docker / containers
   - **tap**    – TAP device used by QEMU/KVM for guest networking
   - **br-**    – Docker bridge networks
   - **docker0** – Default Docker bridge
   - **vnet**   – libvirt guest-facing end of a veth pair
+
+  **macOS:**
+  - **bridge** – macOS bridge interface (e.g. bridge0 for Thunderbolt Bridge)
+  - **vmnet**  – VMware Fusion / UTM virtual network (e.g. vmnet1, vmnet8)
+  - **vboxnet** – VirtualBox host-only network (e.g. vboxnet0)
+  - **utun**   – macOS tunnel interface (VPN, Parallels)
 
   Monitoring these interfaces lets us see inter-VM traffic that
   never touches the physical NIC.
