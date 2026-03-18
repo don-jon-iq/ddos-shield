@@ -41,9 +41,11 @@ export default function DeviceList({ traffic }) {
   })
 
   const filtered = enrichedDevices.filter((d) => {
+    const searchLower = search.toLowerCase()
     const matchesSearch =
-      d.mac_address.toLowerCase().includes(search.toLowerCase()) ||
-      d.vendor.toLowerCase().includes(search.toLowerCase())
+      d.mac_address.toLowerCase().includes(searchLower) ||
+      d.vendor.toLowerCase().includes(searchLower) ||
+      (d.ip_address || '').toLowerCase().includes(searchLower)
     const matchesFilter =
       filter === 'all' ||
       (filter === 'vm' && d.is_vm) ||
@@ -74,7 +76,7 @@ export default function DeviceList({ traffic }) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search MAC or vendor..."
+            placeholder="Search MAC, IP, or vendor..."
             className="w-full pl-9 pr-3 py-2 bg-cyber-bg border border-cyber-border rounded text-sm text-gray-300 focus:outline-none focus:border-matrix-green/50"
           />
         </div>
@@ -102,6 +104,7 @@ export default function DeviceList({ traffic }) {
             <tr className="text-gray-500 text-xs uppercase tracking-wider border-b border-cyber-border">
               <th className="text-left py-3 px-2">Device</th>
               <th className="text-left py-3 px-2">MAC Address</th>
+              <th className="text-left py-3 px-2">IP Address</th>
               <th className="text-left py-3 px-2">Vendor</th>
               <th className="text-right py-3 px-2">Total PPS</th>
               <th className="text-right py-3 px-2">Packets</th>
@@ -124,6 +127,9 @@ export default function DeviceList({ traffic }) {
                 </td>
                 <td className="py-3 px-2 font-mono text-matrix-green text-xs">
                   {device.mac_address}
+                </td>
+                <td className="py-3 px-2 font-mono text-info-blue text-xs">
+                  {device.ip_address || device.live?.ip_address || '—'}
                 </td>
                 <td className="py-3 px-2 text-gray-400">{device.vendor}</td>
                 <td className="py-3 px-2 text-right font-mono">
@@ -148,7 +154,7 @@ export default function DeviceList({ traffic }) {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-gray-600">
+                <td colSpan={8} className="py-8 text-center text-gray-600">
                   No devices found
                 </td>
               </tr>

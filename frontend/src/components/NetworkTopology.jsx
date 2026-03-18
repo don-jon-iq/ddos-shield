@@ -137,6 +137,9 @@ export default function NetworkTopology({ traffic }) {
                     >
                       <Icon className="w-5 h-5" style={{ color }} />
                     </div>
+                    <span className="font-mono text-[10px] text-info-blue text-center">
+                      {device.ip_address || '—'}
+                    </span>
                     <span className="font-mono text-[10px] text-gray-400 text-center break-all">
                       {device.mac_address}
                     </span>

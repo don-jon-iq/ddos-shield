@@ -83,6 +83,7 @@ class Device(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     mac_address: Mapped[str] = mapped_column(String(17), unique=True, index=True)
+    ip_address: Mapped[str] = mapped_column(String(45), default="")
     vendor: Mapped[str] = mapped_column(String(128), default="Unknown")
     first_seen: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
@@ -101,6 +102,7 @@ class Device(Base):
         return {
             "id": self.id,
             "mac_address": self.mac_address,
+            "ip_address": self.ip_address,
             "vendor": self.vendor,
             "first_seen": self.first_seen.isoformat(),
             "last_seen": self.last_seen.isoformat(),

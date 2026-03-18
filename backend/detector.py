@@ -52,6 +52,7 @@ class TrafficSnapshot:
     """Per-MAC traffic counters for one analysis window."""
 
     mac_address: str
+    ip_address: str
     syn_pps: float
     udp_pps: float
     icmp_pps: float

@@ -106,6 +106,7 @@ async def _analysis_loop():
                     if device is None:
                         device = Device(
                             mac_address=snap.mac_address,
+                            ip_address=snap.ip_address,
                             vendor=vendor,
                             first_seen=now,
                             last_seen=now,
@@ -120,6 +121,8 @@ async def _analysis_loop():
                         device.total_packets += int(snap.total_pps * config.sniffer.window_seconds)
                         device.vendor = vendor
                         device.is_vm = vm
+                        if snap.ip_address:
+                            device.ip_address = snap.ip_address
 
                 await session.commit()
 
@@ -181,6 +184,7 @@ async def _analysis_loop():
             for snap in snapshots:
                 traffic_data.append({
                     "mac_address": snap.mac_address,
+                    "ip_address": snap.ip_address,
                     "syn_pps": round(snap.syn_pps, 1),
                     "udp_pps": round(snap.udp_pps, 1),
                     "icmp_pps": round(snap.icmp_pps, 1),
@@ -189,9 +193,13 @@ async def _analysis_loop():
                     "total_pps": round(snap.total_pps, 1),
                 })
 
+            # Build a MAC→IP lookup from current snapshots
+            mac_to_ip = {s.mac_address: s.ip_address for s in snapshots}
+
             alerts = [
                 {
                     "mac_address": d.mac_address,
+                    "ip_address": mac_to_ip.get(d.mac_address, ""),
                     "attack_type": d.attack_type.value,
                     "severity": d.severity.value,
                     "pps": round(d.packets_per_second, 1),
@@ -254,11 +262,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow the React dev server
+# CORS — allow all origins for dev/lab use
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -727,3 +735,9 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

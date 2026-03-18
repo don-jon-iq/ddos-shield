@@ -61,6 +61,11 @@ export default function AttackAlerts({ alerts, alertHistory, onShowEducational }
                         <span className={`text-xs font-bold px-2 py-0.5 rounded ${style.bg} ${style.text} border ${style.border}`}>
                           {alert.severity}
                         </span>
+                        {alert.ip_address && (
+                          <span className="font-mono text-sm text-info-blue">
+                            {alert.ip_address}
+                          </span>
+                        )}
                         <span className="font-mono text-sm text-matrix-green">
                           {alert.mac_address}
                         </span>
@@ -115,6 +120,9 @@ export default function AttackAlerts({ alerts, alertHistory, onShowEducational }
                 >
                   <span className={`text-xs font-bold w-16 ${style.text}`}>
                     {alert.severity}
+                  </span>
+                  <span className="font-mono text-xs text-info-blue w-24">
+                    {alert.ip_address || '—'}
                   </span>
                   <span className="font-mono text-xs text-matrix-green w-36">
                     {alert.mac_address}

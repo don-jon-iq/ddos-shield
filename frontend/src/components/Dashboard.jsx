@@ -137,6 +137,9 @@ export default function Dashboard({ traffic, alerts, alertHistory, trafficHistor
               >
                 <div className="flex items-center gap-3">
                   <span className="font-bold text-xs">{alert.severity}</span>
+                  {alert.ip_address && (
+                    <span className="text-info-blue text-xs font-mono">{alert.ip_address}</span>
+                  )}
                   <span className="text-gray-300">{alert.mac_address}</span>
                   <span className="opacity-75">{alert.attack_type}</span>
                 </div>

@@ -55,6 +55,7 @@ class _MacCounters:
     http: int = 0
     arp: int = 0
     total_bytes: int = 0
+    ip_address: str = ""
 
     @property
     def total(self) -> int:
@@ -99,6 +100,10 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
         pkt_len = len(pkt)
         c.total_bytes += pkt_len
 
+        # Capture source IP address if present
+        if pkt.haslayer(IP) and not c.ip_address:
+            c.ip_address = pkt[IP].src
+
         if pkt.haslayer(ARP):
             c.arp += 1
         elif pkt.haslayer(TCP):
@@ -132,18 +137,22 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
 # Simulation engine
 # ---------------------------------------------------------------------------
 
-# Pre-generated fake MAC addresses for simulation
+# Pre-generated fake MAC addresses and their IPs for simulation
 _SIM_MACS: list[str] = []
+_SIM_MAC_IPS: dict[str, str] = {}
 _SIM_ATTACKERS: set[str] = set()
 
 
 def _init_sim_macs():
-    """Generate a pool of simulated device MACs."""
-    global _SIM_MACS, _SIM_ATTACKERS
+    """Generate a pool of simulated device MACs with corresponding IPs."""
+    global _SIM_MACS, _SIM_MAC_IPS, _SIM_ATTACKERS
     _SIM_MACS = [
         f"AA:BB:CC:{i:02X}:{random.randint(0, 255):02X}:{random.randint(0, 255):02X}"
         for i in range(config.simulation.device_count)
     ]
+    _SIM_MAC_IPS = {
+        mac: f"192.168.1.{10 + i}" for i, mac in enumerate(_SIM_MACS)
+    }
     _SIM_ATTACKERS = set()
 
 
@@ -172,6 +181,8 @@ def _simulate_tick(counters: dict[str, _MacCounters]):
 
     for mac in _SIM_MACS:
         c = counters.setdefault(mac, _MacCounters())
+        if not c.ip_address:
+            c.ip_address = _SIM_MAC_IPS.get(mac, "")
 
         if mac in _SIM_ATTACKERS:
             # Simulated attack — pick a random attack type
@@ -258,6 +269,7 @@ class PacketSniffer:
             snapshots.append(
                 TrafficSnapshot(
                     mac_address=mac,
+                    ip_address=c.ip_address,
                     syn_pps=c.syn / elapsed,
                     udp_pps=c.udp / elapsed,
                     icmp_pps=c.icmp / elapsed,
@@ -280,6 +292,7 @@ class PacketSniffer:
                 "arp": c.arp,
                 "total": c.total,
                 "total_bytes": c.total_bytes,
+                "ip_address": c.ip_address,
             }
             for mac, c in self._counters.items()
         }
