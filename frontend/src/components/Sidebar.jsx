@@ -1,5 +1,6 @@
 import {
   Shield,
+  ShieldCheck,
   Activity,
   Monitor,
   AlertTriangle,
@@ -10,12 +11,15 @@ import {
   LogOut,
   Wifi,
   WifiOff,
+  ServerCog,
 } from 'lucide-react'
 import { clearToken } from '../utils/api'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
-  { id: 'devices', label: 'Devices', icon: Monitor },
+  { id: 'device-manager', label: 'Devices', icon: ServerCog },
+  { id: 'protection', label: 'Protection', icon: ShieldCheck },
+  { id: 'devices', label: 'Traffic Monitor', icon: Monitor },
   { id: 'alerts', label: 'Attack Alerts', icon: AlertTriangle },
   { id: 'history', label: 'Attack History', icon: History },
   { id: 'topology', label: 'Network Map', icon: Network },

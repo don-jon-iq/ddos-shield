@@ -39,6 +39,16 @@ from auth import (
 from config import config
 from database import async_session_factory, get_session, init_db
 from detector import run_detection
+from device_manager import (
+    add_device,
+    delete_device,
+    get_managed_device,
+    get_protected_devices,
+    list_managed_devices,
+    record_uptime_check,
+    toggle_protection,
+    update_device,
+)
 from mac_vendor import is_vm_mac, lookup_vendor
 from mitigator import (
     block_ip,
@@ -52,7 +62,18 @@ from mitigator import (
     unblock_ip,
     unblock_mac,
 )
-from models import AttackLog, AttackType, BlockedMAC, Device, DeviceStatus, Severity
+from models import (
+    AttackLog,
+    AttackType,
+    BlockedMAC,
+    Device,
+    DeviceStatus,
+    ManagedDevice,
+    ProtectionLog,
+    Severity,
+)
+from protector import check_protection, get_blocked_attackers
+from scanner import get_last_scan_results, periodic_scan_loop, scan_network
 from sniffer import PacketSniffer
 from vm_monitor import detect_interfaces
 from websocket_manager import ws_manager
@@ -73,6 +94,7 @@ logger = logging.getLogger("ddos_shield")
 
 sniffer = PacketSniffer()
 _analysis_task: asyncio.Task | None = None
+_scanner_task: asyncio.Task | None = None
 
 
 async def _analysis_loop():
@@ -130,8 +152,35 @@ async def _analysis_loop():
 
                 await session.commit()
 
+            # --- Capture destination map before harvest resets it ---
+            dest_map = sniffer.get_destination_map()
+
             # --- Run detection ---
             detections = run_detection(snapshots)
+
+            # --- Protection engine: auto-block attackers targeting protected devices ---
+            async with async_session_factory() as prot_session:
+                protected = await get_protected_devices(prot_session)
+                if protected:
+                    async def _block_attacker(mac, ip, reason):
+                        await block_mac(mac, reason=reason, ip=ip)
+
+                    await check_protection(
+                        snapshots=snapshots,
+                        protected_devices=protected,
+                        dest_map=dest_map,
+                        session=prot_session,
+                        ws_manager=ws_manager,
+                        block_fn=_block_attacker,
+                    )
+
+                    # Record uptime checks for protected devices
+                    for dev in protected:
+                        is_online = any(
+                            s.ip_address == dev.ip_address or s.mac_address == dev.mac_address
+                            for s in snapshots
+                        )
+                        await record_uptime_check(dev.id, is_online, prot_session)
 
             # --- Log attacks & mitigate ---
             if detections:
@@ -236,11 +285,12 @@ async def _analysis_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global _analysis_task
+    global _analysis_task, _scanner_task
 
     await init_db()
     await sniffer.start()
     _analysis_task = asyncio.create_task(_analysis_loop())
+    _scanner_task = asyncio.create_task(periodic_scan_loop(interval=30.0))
     logger.info(
         "DDoS Shield started (simulation=%s, window=%ds)",
         config.simulation.enabled,
@@ -249,12 +299,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    if _analysis_task:
-        _analysis_task.cancel()
-        try:
-            await _analysis_task
-        except asyncio.CancelledError:
-            pass
+    for task in (_analysis_task, _scanner_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     await sniffer.stop()
     logger.info("DDoS Shield stopped")
 
@@ -766,6 +817,212 @@ async def list_attack_types():
     return {
         key: {"name": val["name"], "layer": val["layer"], "severity": val["severity"]}
         for key, val in ATTACK_EXPLANATIONS.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+# Network scanner endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/devices/scan", tags=["Scanner"])
+async def trigger_scan():
+    """Trigger a manual ARP network scan."""
+    results = await scan_network()
+    return [d.to_dict() for d in results]
+
+
+@app.get("/api/devices/discovered", tags=["Scanner"])
+async def list_discovered():
+    """List devices found in the most recent network scan."""
+    results = get_last_scan_results()
+    return [d.to_dict() for d in results]
+
+
+# ---------------------------------------------------------------------------
+# Managed device endpoints
+# ---------------------------------------------------------------------------
+
+class AddDeviceRequest(BaseModel):
+    name: str
+    mac_address: str
+    ip_address: str = ""
+    device_type: str = "unknown"
+    hostname: str = ""
+    os_info: str = ""
+    notes: str = ""
+
+
+class UpdateDeviceRequest(BaseModel):
+    name: str | None = None
+    ip_address: str | None = None
+    device_type: str | None = None
+    hostname: str | None = None
+    os_info: str | None = None
+    notes: str | None = None
+
+
+@app.get("/api/managed-devices", tags=["Managed Devices"])
+async def api_list_managed_devices(session=Depends(get_session)):
+    """List all managed devices (discovered + manually added)."""
+    return await list_managed_devices(session)
+
+
+@app.get("/api/managed-devices/{device_id}", tags=["Managed Devices"])
+async def api_get_managed_device(device_id: int, session=Depends(get_session)):
+    """Get a single managed device by ID."""
+    result = await get_managed_device(device_id, session)
+    if result is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Device not found")
+    return result
+
+
+@app.post("/api/managed-devices", tags=["Managed Devices"])
+async def api_add_device(
+    req: AddDeviceRequest,
+    session=Depends(get_session),
+):
+    """Add a new managed device or update if MAC exists."""
+    return await add_device(
+        session=session,
+        name=req.name,
+        mac_address=req.mac_address,
+        ip_address=req.ip_address,
+        device_type=req.device_type,
+        hostname=req.hostname,
+        os_info=req.os_info,
+        notes=req.notes,
+    )
+
+
+@app.put("/api/managed-devices/{device_id}", tags=["Managed Devices"])
+async def api_update_device(
+    device_id: int,
+    req: UpdateDeviceRequest,
+    session=Depends(get_session),
+):
+    """Update an existing managed device."""
+    result = await update_device(
+        device_id=device_id,
+        session=session,
+        name=req.name,
+        ip_address=req.ip_address,
+        device_type=req.device_type,
+        hostname=req.hostname,
+        os_info=req.os_info,
+        notes=req.notes,
+    )
+    if result is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Device not found")
+    return result
+
+
+@app.delete("/api/managed-devices/{device_id}", tags=["Managed Devices"])
+async def api_delete_device(
+    device_id: int,
+    session=Depends(get_session),
+):
+    """Delete a managed device."""
+    deleted = await delete_device(device_id, session)
+    if not deleted:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {"deleted": True, "id": device_id}
+
+
+@app.post("/api/managed-devices/{device_id}/protect", tags=["Protection"])
+async def api_toggle_protection(
+    device_id: int,
+    session=Depends(get_session),
+):
+    """Toggle protection mode for a device."""
+    result = await toggle_protection(device_id, session)
+    if result is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    status = "enabled" if result["is_protected"] else "disabled"
+    await ws_manager.broadcast({
+        "type": "protection_toggle",
+        "device_id": device_id,
+        "device_name": result["name"],
+        "is_protected": result["is_protected"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Protection status endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/protection/status", tags=["Protection"])
+async def api_protection_status(session=Depends(get_session)):
+    """Get protection status for all protected devices."""
+    protected = await get_protected_devices(session)
+    blocked = get_blocked_attackers()
+    return {
+        "protected_count": len(protected),
+        "devices": [d.to_dict() for d in protected],
+        "blocked_attackers": blocked,
+    }
+
+
+@app.get("/api/protection/logs", tags=["Protection"])
+async def api_protection_logs(
+    device_id: Optional[int] = None,
+    limit: int = Query(50, ge=1, le=500),
+    session=Depends(get_session),
+):
+    """Get protection event logs, optionally filtered by device."""
+    from sqlalchemy import desc as sql_desc
+    query = select(ProtectionLog).order_by(sql_desc(ProtectionLog.timestamp))
+    if device_id is not None:
+        query = query.where(ProtectionLog.device_id == device_id)
+    query = query.limit(limit)
+
+    result = await session.execute(query)
+    logs = result.scalars().all()
+    return [log.to_dict() for log in logs]
+
+
+@app.get("/api/protection/summary", tags=["Protection"])
+async def api_protection_summary(session=Depends(get_session)):
+    """Summary stats for the protection system."""
+    protected = await get_protected_devices(session)
+    total_blocked = sum(d.attacks_blocked for d in protected)
+    avg_uptime = (
+        sum(
+            d.uptime_successes / d.uptime_checks * 100
+            if d.uptime_checks > 0 else 100.0
+            for d in protected
+        ) / len(protected)
+        if protected else 100.0
+    )
+
+    return {
+        "protected_devices": len(protected),
+        "total_attacks_blocked": total_blocked,
+        "average_uptime_percent": round(avg_uptime, 1),
+        "devices": [
+            {
+                "id": d.id,
+                "name": d.name,
+                "ip_address": d.ip_address,
+                "attacks_blocked": d.attacks_blocked,
+                "uptime_percent": (
+                    round(d.uptime_successes / d.uptime_checks * 100, 1)
+                    if d.uptime_checks > 0 else 100.0
+                ),
+                "is_online": d.is_online,
+                "last_attack_time": (
+                    d.last_attack_time.isoformat() if d.last_attack_time else None
+                ),
+            }
+            for d in protected
+        ],
     }
 
 

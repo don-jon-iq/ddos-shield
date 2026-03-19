@@ -106,3 +106,34 @@ export const getAttackExplanation = (type) =>
   request(`/educational/${encodeURIComponent(type)}`)
 
 export const getAttackTypes = () => request('/educational')
+
+// --- Scanner ---
+export const scanNetwork = () => request('/devices/scan')
+export const getDiscoveredDevices = () => request('/devices/discovered')
+
+// --- Managed Devices ---
+export const getManagedDevices = () => request('/managed-devices')
+export const getManagedDevice = (id) => request(`/managed-devices/${id}`)
+export const addManagedDevice = (data) =>
+  request('/managed-devices', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+export const updateManagedDevice = (id, data) =>
+  request(`/managed-devices/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+export const deleteManagedDevice = (id) =>
+  request(`/managed-devices/${id}`, { method: 'DELETE' })
+export const toggleDeviceProtection = (id) =>
+  request(`/managed-devices/${id}/protect`, { method: 'POST' })
+
+// --- Protection ---
+export const getProtectionStatus = () => request('/protection/status')
+export const getProtectionLogs = (deviceId, limit = 50) => {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (deviceId != null) params.set('device_id', String(deviceId))
+  return request(`/protection/logs?${params}`)
+}
+export const getProtectionSummary = () => request('/protection/summary')

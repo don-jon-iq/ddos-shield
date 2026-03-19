@@ -3,11 +3,13 @@ import {
   Activity,
   AlertTriangle,
   Monitor,
+  Shield,
   ShieldCheck,
   ShieldAlert,
+  ShieldOff,
   Zap,
 } from 'lucide-react'
-import { getStatus, getAttackStats } from '../utils/api'
+import { getStatus, getAttackStats, getProtectionSummary, toggleDeviceProtection } from '../utils/api'
 import TrafficChart from './TrafficChart'
 
 function StatCard({ label, value, icon: Icon, color = 'green', glow = false }) {
@@ -44,13 +46,19 @@ function StatCard({ label, value, icon: Icon, color = 'green', glow = false }) {
 export default function Dashboard({ traffic, alerts, alertHistory, trafficHistory, activeDevices, wsClients }) {
   const [stats, setStats] = useState({ total_attacks: 0, by_type: {}, by_severity: {} })
   const [status, setStatus] = useState(null)
+  const [protectionSummary, setProtectionSummary] = useState(null)
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [st, as] = await Promise.all([getStatus(), getAttackStats()])
+        const [st, as, ps] = await Promise.all([
+          getStatus(),
+          getAttackStats(),
+          getProtectionSummary(),
+        ])
         setStatus(st)
         setStats(as)
+        setProtectionSummary(ps)
       } catch {
         // API may not be ready yet
       }
@@ -103,6 +111,51 @@ export default function Dashboard({ traffic, alerts, alertHistory, trafficHistor
           color="blue"
         />
       </div>
+
+      {/* Protected Devices Widget */}
+      {protectionSummary && protectionSummary.protected_devices > 0 && (
+        <div className="cyber-card border-matrix-green/20">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+              <Shield className="w-4 h-4 inline mr-1 text-matrix-green" />
+              Protected Devices
+            </h2>
+            <span className="text-xs text-matrix-green bg-matrix-green/10 px-2 py-0.5 rounded-full">
+              {protectionSummary.total_attacks_blocked} attacks blocked
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {protectionSummary.devices.map((device) => (
+              <div
+                key={device.id}
+                className={`flex items-center justify-between px-3 py-2 rounded border ${
+                  device.is_online
+                    ? 'bg-matrix-green/5 border-matrix-green/20'
+                    : 'bg-attack-red/5 border-attack-red/20'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <ShieldCheck
+                    className={`w-4 h-4 ${
+                      device.is_online ? 'text-matrix-green' : 'text-attack-red'
+                    }`}
+                  />
+                  <div>
+                    <p className="text-sm text-gray-200">{device.name}</p>
+                    <p className="text-[10px] text-gray-500">{device.ip_address}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-matrix-green font-bold">
+                    {device.uptime_percent}%
+                  </p>
+                  <p className="text-[10px] text-gray-500">uptime</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Traffic chart */}
       <div className="cyber-card">

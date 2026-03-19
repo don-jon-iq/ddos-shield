@@ -5,6 +5,8 @@ import LoginPage from './components/LoginPage'
 import Sidebar from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import DeviceList from './components/DeviceList'
+import DeviceManager from './components/DeviceManager'
+import ProtectionStatus from './components/ProtectionStatus'
 import AttackAlerts from './components/AttackAlerts'
 import AttackHistory from './components/AttackHistory'
 import NetworkTopology from './components/NetworkTopology'
@@ -36,6 +38,10 @@ export default function App() {
             wsClients={ws.wsClients}
           />
         )
+      case 'device-manager':
+        return <DeviceManager />
+      case 'protection':
+        return <ProtectionStatus />
       case 'devices':
         return <DeviceList traffic={ws.traffic} />
       case 'alerts':

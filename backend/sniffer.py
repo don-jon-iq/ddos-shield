@@ -294,6 +294,10 @@ def _simulate_tick(counters: dict[str, _MacCounters]):
 
         if mac in _SIM_ATTACKERS:
             # Simulated attack — pick a random attack type
+            # Target a random other device's IP (simulates attacking a specific device)
+            other_ips = [_SIM_MAC_IPS[m] for m in _SIM_MACS if m != mac]
+            if other_ips:
+                c.dst_ip = random.choice(other_ips)
             attack = random.choice(["syn", "udp", "icmp", "http", "arp"])
             intensity = random.randint(200, 2000)
             setattr(c, attack, getattr(c, attack) + intensity)
@@ -403,6 +407,14 @@ class PacketSniffer:
                 "ip_address": c.ip_address,
             }
             for mac, c in self._counters.items()
+        }
+
+    def get_destination_map(self) -> dict[str, str]:
+        """Return a mapping of source MAC -> destination IP from current counters."""
+        return {
+            mac: c.dst_ip
+            for mac, c in self._counters.items()
+            if c.dst_ip
         }
 
     async def _simulation_loop(self) -> None:

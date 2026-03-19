@@ -2,9 +2,11 @@
 SQLAlchemy ORM models for DDoS Shield.
 
 Tables:
-  - devices:      Every MAC address seen on the network.
-  - attack_logs:  Historical record of every detected attack.
-  - blocked_macs: Currently blocked MAC addresses.
+  - devices:          Every MAC address seen on the network.
+  - attack_logs:      Historical record of every detected attack.
+  - blocked_macs:     Currently blocked MAC addresses.
+  - managed_devices:  User-managed devices with protection toggle.
+  - protection_logs:  Log of protection events (attacks blocked per device).
 
 Educational note:
   Each model maps to a SQLite table.  SQLAlchemy lets us interact with
@@ -15,7 +17,7 @@ Educational note:
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, Boolean
+from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, Boolean, ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -62,6 +64,14 @@ class DeviceStatus(str, PyEnum):
     NORMAL = "NORMAL"
     SUSPICIOUS = "SUSPICIOUS"
     BLOCKED = "BLOCKED"
+
+
+class DeviceType(str, PyEnum):
+    """Classification of managed network devices."""
+    SERVER = "server"
+    CLIENT = "client"
+    ROUTER = "router"
+    UNKNOWN = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -178,4 +188,95 @@ class BlockedMAC(Base):
             "blocked_at": self.blocked_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "reason": self.reason,
+        }
+
+
+class ManagedDevice(Base):
+    """
+    A user-managed network device with optional protection mode.
+
+    Devices can be discovered via ARP scan or added manually.
+    When is_protected is True, the protection engine monitors all
+    inbound traffic and auto-blocks attackers targeting this device.
+    """
+
+    __tablename__ = "managed_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    mac_address: Mapped[str] = mapped_column(String(17), unique=True, index=True)
+    ip_address: Mapped[str] = mapped_column(String(45), default="")
+    device_type: Mapped[DeviceType] = mapped_column(
+        Enum(DeviceType), default=DeviceType.UNKNOWN
+    )
+    hostname: Mapped[str] = mapped_column(String(256), default="")
+    os_info: Mapped[str] = mapped_column(String(256), default="")
+    is_protected: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_online: Mapped[bool] = mapped_column(Boolean, default=True)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    notes: Mapped[str] = mapped_column(Text, default="")
+    attacks_blocked: Mapped[int] = mapped_column(Integer, default=0)
+    uptime_checks: Mapped[int] = mapped_column(Integer, default=0)
+    uptime_successes: Mapped[int] = mapped_column(Integer, default=0)
+    last_attack_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+    def to_dict(self) -> dict:
+        uptime_pct = (
+            round(self.uptime_successes / self.uptime_checks * 100, 1)
+            if self.uptime_checks > 0
+            else 100.0
+        )
+        return {
+            "id": self.id,
+            "name": self.name,
+            "mac_address": self.mac_address,
+            "ip_address": self.ip_address,
+            "device_type": self.device_type.value,
+            "hostname": self.hostname,
+            "os_info": self.os_info,
+            "is_protected": self.is_protected,
+            "is_online": self.is_online,
+            "first_seen": self.first_seen.isoformat(),
+            "last_seen": self.last_seen.isoformat(),
+            "notes": self.notes,
+            "attacks_blocked": self.attacks_blocked,
+            "uptime_percent": uptime_pct,
+            "last_attack_time": (
+                self.last_attack_time.isoformat() if self.last_attack_time else None
+            ),
+        }
+
+
+class ProtectionLog(Base):
+    """
+    Log entry for a protection event — records each time the protection
+    engine blocks an attacker targeting a protected device.
+    """
+
+    __tablename__ = "protection_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[int] = mapped_column(Integer, ForeignKey("managed_devices.id"), index=True)
+    attacker_mac: Mapped[str] = mapped_column(String(17), default="")
+    attacker_ip: Mapped[str] = mapped_column(String(45), default="")
+    attack_type: Mapped[str] = mapped_column(String(32), default="")
+    action_taken: Mapped[str] = mapped_column(String(64), default="blocked")
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "device_id": self.device_id,
+            "attacker_mac": self.attacker_mac,
+            "attacker_ip": self.attacker_ip,
+            "attack_type": self.attack_type,
+            "action_taken": self.action_taken,
+            "timestamp": self.timestamp.isoformat(),
         }
