@@ -172,7 +172,12 @@ export default function Dashboard({ traffic, alerts, alertHistory, trafficHistor
           Recent Alerts
         </h2>
         {alertHistory.length === 0 ? (
-          <p className="text-gray-600 text-sm">No attacks detected yet. Network is clean.</p>
+          <p className="text-gray-600 text-sm">
+            No attacks detected yet.{' '}
+            {activeDevices === 0
+              ? 'No traffic captured — make sure you are running with sudo and connected to a network.'
+              : 'Network is clean.'}
+          </p>
         ) : (
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {alertHistory.slice(0, 10).map((alert) => (

@@ -76,6 +76,7 @@ from protector import check_protection, get_blocked_attackers
 from scanner import get_last_scan_results, periodic_scan_loop, scan_network
 from settings import router as settings_router
 from sniffer import PacketSniffer
+from network_utils import get_network_info
 from vm_monitor import detect_interfaces
 from websocket_manager import ws_manager
 
@@ -292,11 +293,17 @@ async def lifespan(app: FastAPI):
     await sniffer.start()
     _analysis_task = asyncio.create_task(_analysis_loop())
     _scanner_task = asyncio.create_task(periodic_scan_loop(interval=30.0))
+
+    net = get_network_info()
     logger.info(
-        "DDoS Shield started (simulation=%s, window=%ds)",
+        "DDoS Shield started (simulation=%s, interface=%s, subnet=%s, window=%ds)",
         config.simulation.enabled,
+        net.get("interface", "?"),
+        net.get("subnet", "?"),
         config.sniffer.window_seconds,
     )
+    if not config.simulation.enabled and net.get("error"):
+        logger.warning("Network detection issue: %s", net["error"])
 
     yield
 
@@ -644,6 +651,12 @@ async def list_interfaces():
         }
         for i in interfaces
     ]
+
+
+@app.get("/api/network", tags=["Network"])
+async def network_info():
+    """Return auto-detected network info (interface, IP, subnet)."""
+    return get_network_info()
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from config import config
+from network_utils import get_subnet_cidr
 
 logger = logging.getLogger("ddos_shield.scanner")
 
@@ -110,17 +111,37 @@ def _detect_os_from_ttl(ttl: int) -> str:
     return "Network device (TTL>128)"
 
 
-async def _real_arp_scan(subnet: str = "192.168.1.0/24") -> list[DiscoveredDevice]:
+async def _real_arp_scan(subnet: str | None = None) -> list[DiscoveredDevice]:
     """
     Perform an ARP scan on the local network using Scapy.
 
+    Auto-detects the subnet from the active interface if not provided.
     Sends ARP who-has requests to every IP in the subnet and collects
     responses to build a list of active devices.
     """
+    if not subnet:
+        subnet = get_subnet_cidr()
+        if not subnet:
+            logger.error(
+                "Cannot determine local subnet for ARP scan. "
+                "Make sure you are connected to a network."
+            )
+            return []
+
+    logger.info("ARP scanning subnet: %s", subnet)
+
     try:
         from scapy.all import ARP, Ether, srp, IP, sr1, ICMP, conf  # type: ignore
     except ImportError:
         logger.error("Scapy not installed. Cannot perform ARP scan.")
+        return []
+
+    # Check for root/sudo
+    import os as _os
+    if _os.geteuid() != 0:
+        logger.error(
+            "ARP scan requires root/sudo. Run with: sudo python main.py"
+        )
         return []
 
     loop = asyncio.get_event_loop()
@@ -170,7 +191,7 @@ _last_scan_results: list[DiscoveredDevice] = []
 _scan_lock = asyncio.Lock()
 
 
-async def scan_network(subnet: str = "192.168.1.0/24") -> list[DiscoveredDevice]:
+async def scan_network(subnet: str | None = None) -> list[DiscoveredDevice]:
     """
     Scan the local network for devices.
 
@@ -178,6 +199,8 @@ async def scan_network(subnet: str = "192.168.1.0/24") -> list[DiscoveredDevice]
     In real mode, performs an ARP scan (requires root).
     Real mode NEVER generates fake/simulated devices — the list stays
     empty until real devices are found via ARP.
+
+    The subnet is auto-detected from the active interface if not provided.
     """
     global _last_scan_results
 
@@ -204,7 +227,10 @@ async def scan_network(subnet: str = "192.168.1.0/24") -> list[DiscoveredDevice]
             if results:
                 logger.info("ARP scan complete: found %d devices", len(results))
             else:
-                logger.info("ARP scan complete: no devices found (need root/sudo)")
+                logger.info(
+                    "ARP scan complete: no devices found. "
+                    "Ensure you are running with sudo and connected to a network."
+                )
 
         return _last_scan_results
 

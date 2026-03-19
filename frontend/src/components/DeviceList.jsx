@@ -154,8 +154,13 @@ export default function DeviceList({ traffic }) {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-8 text-center text-gray-600">
-                  No devices found
+                <td colSpan={8} className="py-12 text-center">
+                  <p className="text-gray-500 text-sm">
+                    No devices discovered yet.
+                  </p>
+                  <p className="text-gray-600 text-xs mt-2">
+                    Make sure you are running with <span className="font-mono text-warn-yellow">sudo</span> and connected to a network.
+                  </p>
                 </td>
               </tr>
             )}

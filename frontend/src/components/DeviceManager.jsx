@@ -546,9 +546,14 @@ export default function DeviceManager() {
           <Shield className="w-12 h-12 text-gray-700 mx-auto mb-3" />
           <p className="text-gray-500 text-sm">
             {devices.length === 0
-              ? 'No devices yet. Scan the network or add a device manually.'
+              ? 'No devices discovered yet. Make sure you are running with sudo and connected to a network.'
               : 'No devices match your search.'}
           </p>
+          {devices.length === 0 && (
+            <p className="text-gray-600 text-xs mt-2">
+              Click "Scan Network" to discover devices on your local network.
+            </p>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

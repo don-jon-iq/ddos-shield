@@ -22,7 +22,7 @@ _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 DEFAULTS: dict[str, str] = {
     # Simulation
-    "SIMULATION_MODE": "true",
+    "SIMULATION_MODE": "false",
     "SIM_DEVICE_COUNT": "8",
     "SIM_ATTACK_PROB": "0.15",
     "SIM_TICK_INTERVAL": "2.0",
