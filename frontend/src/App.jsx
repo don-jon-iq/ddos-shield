@@ -13,6 +13,7 @@ import NetworkTopology from './components/NetworkTopology'
 import RescuePanel from './components/RescuePanel'
 import EducationalPopup from './components/EducationalPopup'
 import EducationalPage from './components/EducationalPage'
+import Settings from './components/Settings'
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(isAuthenticated())
@@ -60,6 +61,8 @@ export default function App() {
         return <RescuePanel />
       case 'educational':
         return <EducationalPage onShowDetail={setEducationalPopup} />
+      case 'settings':
+        return <Settings />
       default:
         return null
     }

@@ -176,6 +176,8 @@ async def scan_network(subnet: str = "192.168.1.0/24") -> list[DiscoveredDevice]
 
     In simulation mode, returns pre-generated fake devices.
     In real mode, performs an ARP scan (requires root).
+    Real mode NEVER generates fake/simulated devices — the list stays
+    empty until real devices are found via ARP.
     """
     global _last_scan_results
 
@@ -196,9 +198,13 @@ async def scan_network(subnet: str = "192.168.1.0/24") -> list[DiscoveredDevice]
             _last_scan_results = results
             logger.info("[SIM] Network scan: found %d devices", len(results))
         else:
+            # Real mode: only ARP-discovered devices, no fakes
             results = await _real_arp_scan(subnet)
             _last_scan_results = results
-            logger.info("ARP scan complete: found %d devices", len(results))
+            if results:
+                logger.info("ARP scan complete: found %d devices", len(results))
+            else:
+                logger.info("ARP scan complete: no devices found (need root/sudo)")
 
         return _last_scan_results
 

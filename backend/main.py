@@ -74,6 +74,7 @@ from models import (
 )
 from protector import check_protection, get_blocked_attackers
 from scanner import get_last_scan_results, periodic_scan_loop, scan_network
+from settings import router as settings_router
 from sniffer import PacketSniffer
 from vm_monitor import detect_interfaces
 from websocket_manager import ws_manager
@@ -325,6 +326,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register settings API routes
+app.include_router(settings_router)
 
 
 # ---------------------------------------------------------------------------

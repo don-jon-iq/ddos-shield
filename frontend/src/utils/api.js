@@ -129,6 +129,26 @@ export const deleteManagedDevice = (id) =>
 export const toggleDeviceProtection = (id) =>
   request(`/managed-devices/${id}/protect`, { method: 'POST' })
 
+// --- Settings ---
+export const getSettings = () => request('/settings')
+export const updateSettings = (data) =>
+  request('/settings', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+export const getSettingsInterfaces = () => request('/settings/interfaces')
+export const resetSettings = () =>
+  request('/settings/reset', { method: 'POST' })
+export const getSettingsDefaults = () => request('/settings/defaults')
+export const changePassword = (currentPassword, newPassword) =>
+  request('/settings/password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  })
+
 // --- Protection ---
 export const getProtectionStatus = () => request('/protection/status')
 export const getProtectionLogs = (deviceId, limit = 50) => {

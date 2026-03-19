@@ -12,6 +12,7 @@ import {
   Wifi,
   WifiOff,
   ServerCog,
+  Settings,
 } from 'lucide-react'
 import { clearToken } from '../utils/api'
 
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { id: 'topology', label: 'Network Map', icon: Network },
   { id: 'rescue', label: 'Rescue Panel', icon: Wrench },
   { id: 'educational', label: 'Learn', icon: BookOpen },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
 export default function Sidebar({ active, onNavigate, connected, onLogout }) {
@@ -60,7 +62,7 @@ export default function Sidebar({ active, onNavigate, connected, onLogout }) {
 
       {/* Navigation */}
       <nav className="flex-1 py-2 overflow-y-auto">
-        {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+        {NAV_ITEMS.filter((item) => item.id !== 'settings').map(({ id, label, icon: Icon }) => {
           const isActive = active === id
           return (
             <button
@@ -79,7 +81,21 @@ export default function Sidebar({ active, onNavigate, connected, onLogout }) {
         })}
       </nav>
 
-      {/* Logout */}
+      {/* Settings + Logout */}
+      <div className="border-t border-cyber-border">
+        <button
+          onClick={() => onNavigate('settings')}
+          className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-all ${
+            active === 'settings'
+              ? 'text-matrix-green bg-matrix-green/10 border-r-2 border-matrix-green'
+              : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+          }`}
+        >
+          <Settings className="w-4 h-4" />
+          Settings
+        </button>
+      </div>
+
       <div className="p-4 border-t border-cyber-border">
         <button
           onClick={handleLogout}
