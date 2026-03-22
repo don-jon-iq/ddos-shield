@@ -110,6 +110,7 @@ export const getAttackTypes = () => request('/educational')
 // --- Scanner ---
 export const scanNetwork = () => request('/devices/scan')
 export const getDiscoveredDevices = () => request('/devices/discovered')
+export const getScanStatus = () => request('/devices/scan/status')
 
 // --- Managed Devices ---
 export const getManagedDevices = () => request('/managed-devices')
@@ -157,3 +158,61 @@ export const getProtectionLogs = (deviceId, limit = 50) => {
   return request(`/protection/logs?${params}`)
 }
 export const getProtectionSummary = () => request('/protection/summary')
+
+// --- Port Scanner ---
+export const scanDevicePorts = (ip, mac = '') =>
+  request(`/ports/scan/${encodeURIComponent(ip)}?mac=${encodeURIComponent(mac)}`)
+export const getDevicePorts = (ip) =>
+  request(`/ports/${encodeURIComponent(ip)}`)
+export const getAllPorts = () => request('/ports')
+export const clearPortCache = (ip) =>
+  request(`/ports/cache${ip ? `?ip=${encodeURIComponent(ip)}` : ''}`, { method: 'DELETE' })
+
+// --- Security / Vulnerability ---
+export const assessDeviceSecurity = (ip, mac = '') =>
+  request(`/security/assess/${encodeURIComponent(ip)}?mac=${encodeURIComponent(mac)}`)
+export const getSecurityGrade = () => request('/security/grade')
+export const scanAllDevices = () => request('/security/scan-all')
+
+// --- Bandwidth ---
+export const getBandwidth = () => request('/bandwidth')
+export const getTopTalkers = (limit = 10) => request(`/bandwidth/top-talkers?limit=${limit}`)
+export const getProtocols = (mac) =>
+  request(`/bandwidth/protocols${mac ? `?mac=${encodeURIComponent(mac)}` : ''}`)
+export const getConnections = (mac) =>
+  request(`/bandwidth/connections${mac ? `?mac=${encodeURIComponent(mac)}` : ''}`)
+export const getBandwidthHistory = (mac, limit = 100) => {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (mac) params.set('mac', mac)
+  return request(`/bandwidth/history?${params}`)
+}
+export const getDnsQueries = (mac, limit = 100) => {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (mac) params.set('mac', mac)
+  return request(`/bandwidth/dns?${params}`)
+}
+
+// --- Alerts ---
+export const getAlerts = (params = {}) => {
+  const qs = new URLSearchParams(params).toString()
+  return request(`/alerts?${qs}`)
+}
+export const getAlertCounts = () => request('/alerts/counts')
+export const acknowledgeAlert = (id) =>
+  request(`/alerts/${id}/acknowledge`, { method: 'POST' })
+export const resolveAlert = (id) =>
+  request(`/alerts/${id}/resolve`, { method: 'POST' })
+
+// --- Health ---
+export const getHealth = () => request('/health')
+export const getHealthScore = () => request('/health/score')
+export const getHealthHistory = (checkType, limit = 100) => {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (checkType) params.set('check_type', checkType)
+  return request(`/health/history?${params}`)
+}
+export const runHealthCheck = () => request('/health/check', { method: 'POST' })
+
+// --- Device Detail ---
+export const getDeviceDetail = (ip) =>
+  request(`/device-detail/${encodeURIComponent(ip)}`)

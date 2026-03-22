@@ -55,6 +55,21 @@ DEFAULTS: dict[str, str] = {
     # Scanner
     "SCAN_INTERVAL": "30",
     "AUTO_SCAN": "true",
+    # Port Scanner
+    "PORT_SCAN_ENABLED": "true",
+    "PORT_SCAN_TOP_PORTS": "100",
+    "PORT_SCAN_TIMEOUT": "1.0",
+    # Bandwidth Monitoring
+    "BANDWIDTH_LOG_INTERVAL": "30",
+    "BANDWIDTH_RETENTION_HOURS": "168",
+    # Health Monitoring
+    "HEALTH_CHECK_INTERVAL": "60",
+    "HEALTH_GATEWAY_IP": "",
+    "HEALTH_DNS_SERVER": "8.8.8.8",
+    # Alert Engine
+    "ALERT_ROGUE_DEVICE": "true",
+    "ALERT_NEW_DEVICE_HOURS": "22,23,0,1,2,3,4,5",
+    "ALERT_RETENTION_DAYS": "30",
 }
 
 
@@ -128,6 +143,45 @@ class ScannerConfig:
         self.auto_scan: bool = _env("AUTO_SCAN").lower() == "true"
 
 
+class PortScanConfig:
+    """Port scanner settings."""
+
+    def __init__(self) -> None:
+        self.enabled: bool = _env("PORT_SCAN_ENABLED").lower() == "true"
+        self.top_ports: int = int(_env("PORT_SCAN_TOP_PORTS"))
+        self.timeout: float = float(_env("PORT_SCAN_TIMEOUT"))
+
+
+class BandwidthConfig:
+    """Bandwidth monitoring settings."""
+
+    def __init__(self) -> None:
+        self.log_interval: int = int(_env("BANDWIDTH_LOG_INTERVAL"))
+        self.retention_hours: int = int(_env("BANDWIDTH_RETENTION_HOURS"))
+
+
+class HealthConfig:
+    """Network health monitoring settings."""
+
+    def __init__(self) -> None:
+        self.check_interval: int = int(_env("HEALTH_CHECK_INTERVAL"))
+        self.gateway_ip: str = _env("HEALTH_GATEWAY_IP")
+        self.dns_server: str = _env("HEALTH_DNS_SERVER")
+
+
+class AlertEngineConfig:
+    """Smart alert engine settings."""
+
+    def __init__(self) -> None:
+        self.rogue_device_alerts: bool = _env("ALERT_ROGUE_DEVICE").lower() == "true"
+        hours_str = _env("ALERT_NEW_DEVICE_HOURS")
+        self.new_device_alert_hours: list[int] = (
+            [int(h.strip()) for h in hours_str.split(",") if h.strip()]
+            if hours_str else []
+        )
+        self.retention_days: int = int(_env("ALERT_RETENTION_DAYS"))
+
+
 class AppConfig:
     """Top-level config aggregating all sub-configs."""
 
@@ -139,6 +193,10 @@ class AppConfig:
         self.auth = AuthConfig()
         self.simulation = SimulationConfig()
         self.scanner = ScannerConfig()
+        self.port_scan = PortScanConfig()
+        self.bandwidth = BandwidthConfig()
+        self.health = HealthConfig()
+        self.alert_engine = AlertEngineConfig()
         self.database_url: str = _env("DATABASE_URL")
         self.ws_broadcast_interval: float = float(_env("WS_INTERVAL"))
         self.vm_interface_prefixes: frozenset[str] = frozenset(
@@ -155,6 +213,10 @@ class AppConfig:
             self.auth = AuthConfig()
             self.simulation = SimulationConfig()
             self.scanner = ScannerConfig()
+            self.port_scan = PortScanConfig()
+            self.bandwidth = BandwidthConfig()
+            self.health = HealthConfig()
+            self.alert_engine = AlertEngineConfig()
             self.database_url = _env("DATABASE_URL")
             self.ws_broadcast_interval = float(_env("WS_INTERVAL"))
 
@@ -190,6 +252,20 @@ class AppConfig:
             # Scanner
             "SCAN_INTERVAL": self.scanner.scan_interval,
             "AUTO_SCAN": self.scanner.auto_scan,
+            # Port Scanner
+            "PORT_SCAN_ENABLED": self.port_scan.enabled,
+            "PORT_SCAN_TOP_PORTS": self.port_scan.top_ports,
+            "PORT_SCAN_TIMEOUT": self.port_scan.timeout,
+            # Bandwidth
+            "BANDWIDTH_LOG_INTERVAL": self.bandwidth.log_interval,
+            "BANDWIDTH_RETENTION_HOURS": self.bandwidth.retention_hours,
+            # Health
+            "HEALTH_CHECK_INTERVAL": self.health.check_interval,
+            "HEALTH_GATEWAY_IP": self.health.gateway_ip,
+            "HEALTH_DNS_SERVER": self.health.dns_server,
+            # Alerts
+            "ALERT_ROGUE_DEVICE": self.alert_engine.rogue_device_alerts,
+            "ALERT_RETENTION_DAYS": self.alert_engine.retention_days,
         }
 
 

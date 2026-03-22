@@ -8,6 +8,10 @@ Educational note:
   - Auto-mitigation (mitigator.py)
   - WebSocket broadcasting (websocket_manager.py)
   - REST API for the dashboard
+  - Port scanning & vulnerability assessment
+  - Bandwidth monitoring & connection tracking
+  - Smart alert system
+  - Network health monitoring
 
   Start the server:
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -71,14 +75,35 @@ from models import (
     ManagedDevice,
     ProtectionLog,
     Severity,
+    Alert,
+    AlertCategory,
+    AlertStatus,
+    DevicePort,
+    BandwidthLog,
+    HealthCheck,
 )
 from protector import check_protection, get_blocked_attackers
-from scanner import get_last_scan_results, periodic_scan_loop, scan_network
+from scanner import get_last_scan_results, is_scanning, periodic_scan_loop, scan_network
 from settings import router as settings_router
 from sniffer import PacketSniffer
 from network_utils import get_network_info
 from vm_monitor import detect_interfaces
 from websocket_manager import ws_manager
+
+# New modules
+from port_scanner import scan_device_ports, get_cached_ports, get_all_cached_ports, clear_port_cache
+from vulnerability import assess_device, calculate_network_grade, DeviceAssessment
+from bandwidth import bandwidth_tracker, simulate_bandwidth_tick
+from alert_engine import (
+    create_alert, get_recent_alerts, get_alert_counts,
+    acknowledge_alert_by_index, resolve_alert_by_index,
+    alert_from_detection, alert_rogue_device,
+    register_known_mac, is_known_mac,
+)
+from health import (
+    run_health_checks, get_last_health, get_health_history,
+    get_health_score, periodic_health_loop,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -97,6 +122,8 @@ logger = logging.getLogger("ddos_shield")
 sniffer = PacketSniffer()
 _analysis_task: asyncio.Task | None = None
 _scanner_task: asyncio.Task | None = None
+_health_task: asyncio.Task | None = None
+_bandwidth_task: asyncio.Task | None = None
 
 
 async def _analysis_loop():
@@ -109,7 +136,8 @@ async def _analysis_loop():
       3. Run detection algorithms.
       4. Log any detected attacks.
       5. Apply auto-mitigation if enabled.
-      6. Broadcast updates to WebSocket clients.
+      6. Generate smart alerts.
+      7. Broadcast updates to WebSocket clients.
     """
     while True:
         try:
@@ -144,6 +172,9 @@ async def _analysis_loop():
                             is_vm=vm,
                         )
                         session.add(device)
+
+                        # Alert on new/rogue device
+                        alert_rogue_device(snap.mac_address, snap.ip_address)
                     else:
                         device.last_seen = now
                         device.total_packets += int(snap.total_pps * config.sniffer.window_seconds)
@@ -151,6 +182,9 @@ async def _analysis_loop():
                         device.is_vm = vm
                         if snap.ip_address:
                             device.ip_address = snap.ip_address
+
+                    # Register as known MAC
+                    register_known_mac(snap.mac_address)
 
                 await session.commit()
 
@@ -207,6 +241,17 @@ async def _analysis_loop():
                         if device:
                             device.status = DeviceStatus.SUSPICIOUS
 
+                        # Generate smart alert
+                        mac_to_ip = {s.mac_address: s.ip_address for s in snapshots}
+                        alert_from_detection(
+                            mac=det.mac_address,
+                            ip=mac_to_ip.get(det.mac_address, ""),
+                            attack_type=det.attack_type,
+                            severity=det.severity,
+                            pps=det.packets_per_second,
+                            description=det.description,
+                        )
+
                         # Auto-mitigation
                         if config.mitigation.auto_block:
                             action = suggested_action(det.attack_type, det.packets_per_second)
@@ -233,6 +278,9 @@ async def _analysis_loop():
                     len(detections),
                     ", ".join(f"{d.mac_address}:{d.attack_type.value}" for d in detections),
                 )
+
+            # --- Harvest bandwidth data ---
+            bandwidth_tracker.harvest()
 
             # --- Broadcast to WebSocket clients ---
             traffic_data = []
@@ -264,6 +312,9 @@ async def _analysis_loop():
                 for d in detections
             ]
 
+            # Include alert counts in broadcast
+            alert_counts = get_alert_counts()
+
             await ws_manager.broadcast({
                 "type": "update",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -271,6 +322,7 @@ async def _analysis_loop():
                 "alerts": alerts,
                 "active_devices": len(snapshots),
                 "ws_clients": ws_manager.client_count,
+                "alert_counts": alert_counts,
             })
 
         except asyncio.CancelledError:
@@ -280,6 +332,22 @@ async def _analysis_loop():
             await asyncio.sleep(5)
 
 
+async def _bandwidth_log_loop():
+    """Periodically simulate bandwidth data in simulation mode."""
+    while True:
+        try:
+            if config.simulation.enabled:
+                from sniffer import _SIM_MAC_IPS
+                if _SIM_MAC_IPS:
+                    simulate_bandwidth_tick(bandwidth_tracker, _SIM_MAC_IPS)
+            await asyncio.sleep(config.bandwidth.log_interval)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Error in bandwidth log loop")
+            await asyncio.sleep(10)
+
+
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
@@ -287,12 +355,14 @@ async def _analysis_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global _analysis_task, _scanner_task
+    global _analysis_task, _scanner_task, _health_task, _bandwidth_task
 
     await init_db()
-    await sniffer.start()
+    await sniffer.start(bw_tracker=bandwidth_tracker)
     _analysis_task = asyncio.create_task(_analysis_loop())
     _scanner_task = asyncio.create_task(periodic_scan_loop(interval=30.0))
+    _health_task = asyncio.create_task(periodic_health_loop())
+    _bandwidth_task = asyncio.create_task(_bandwidth_log_loop())
 
     net = get_network_info()
     logger.info(
@@ -307,7 +377,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    for task in (_analysis_task, _scanner_task):
+    for task in (_analysis_task, _scanner_task, _health_task, _bandwidth_task):
         if task:
             task.cancel()
             try:
@@ -320,8 +390,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="DDoS Shield",
-    description="Educational DDoS Attack Monitoring System",
-    version="1.0.0",
+    description="Educational Network Security Monitoring System",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -388,15 +458,19 @@ async def login(req: LoginRequest):
 
 @app.get("/api/status", tags=["Dashboard"])
 async def get_status():
-    """System status overview."""
+    """System status overview with health and alert info."""
     elapsed = (datetime.now(timezone.utc) - _start_time).total_seconds()
     raw = sniffer.get_raw_counters()
+    health = get_health_score()
+    alert_counts = get_alert_counts()
     return {
         "status": "running",
         "simulation_mode": config.simulation.enabled,
         "active_devices": len(raw),
         "ws_clients": ws_manager.client_count,
         "uptime_seconds": round(elapsed, 1),
+        "health": health,
+        "alert_counts": alert_counts,
     }
 
 
@@ -815,6 +889,62 @@ ATTACK_EXPLANATIONS = {
         "severity": "CRITICAL",
         "layer": "Layer 2 (Data Link)",
     },
+    "PORT_SCAN": {
+        "name": "Port Scanning",
+        "description": (
+            "Port scanning is a reconnaissance technique where an attacker probes "
+            "many ports on a target to discover running services. While not an attack "
+            "itself, it's often the precursor to exploitation."
+        ),
+        "how_it_works": [
+            "1. Attacker sends connection attempts to many ports",
+            "2. Open ports respond (SYN-ACK for TCP)",
+            "3. Closed ports respond with RST",
+            "4. Attacker maps all running services",
+            "5. Attacker researches exploits for discovered services",
+        ],
+        "indicators": [
+            "One source connecting to many ports on a single target",
+            "Sequential or random port access patterns",
+            "Many connection attempts in a short time window",
+        ],
+        "mitigation": [
+            "Firewall rules to limit port exposure",
+            "Port knocking for sensitive services",
+            "IDS/IPS rules to detect scan patterns",
+            "Rate-limit new connections per source",
+        ],
+        "severity": "MEDIUM",
+        "layer": "Layer 4 (Transport)",
+    },
+    "DNS_TUNNEL": {
+        "name": "DNS Tunneling",
+        "description": (
+            "DNS tunneling encodes data in DNS queries and responses to exfiltrate "
+            "data or establish covert command-and-control channels. Since DNS is "
+            "rarely blocked, it's an effective bypass technique."
+        ),
+        "how_it_works": [
+            "1. Attacker sets up a DNS server they control",
+            "2. Malware encodes data in subdomain labels",
+            "3. DNS queries carry exfiltrated data out",
+            "4. DNS responses carry commands back in",
+            "5. Traffic appears as normal DNS to basic inspection",
+        ],
+        "indicators": [
+            "Unusually long DNS query names (>50 characters)",
+            "High volume of DNS queries to unusual domains",
+            "DNS queries with high entropy in subdomain labels",
+        ],
+        "mitigation": [
+            "DNS query length monitoring",
+            "Whitelist known-good DNS domains",
+            "Deep packet inspection of DNS traffic",
+            "Use DNS-over-HTTPS to detect anomalous plain DNS",
+        ],
+        "severity": "HIGH",
+        "layer": "Layer 7 (Application)",
+    },
 }
 
 
@@ -853,6 +983,233 @@ async def list_discovered():
     """List devices found in the most recent network scan."""
     results = get_last_scan_results()
     return [d.to_dict() for d in results]
+
+
+@app.get("/api/devices/scan/status", tags=["Scanner"])
+async def scan_status():
+    """Check if a scan is currently in progress."""
+    return {"scanning": is_scanning(), "device_count": len(get_last_scan_results())}
+
+
+# ---------------------------------------------------------------------------
+# Port scanning endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/ports/scan/{ip_address}", tags=["Port Scanner"])
+async def trigger_port_scan(ip_address: str, mac: str = ""):
+    """Scan ports on a specific device."""
+    results = await scan_device_ports(ip_address, mac)
+    return [r.to_dict() for r in results]
+
+
+@app.get("/api/ports/{ip_address}", tags=["Port Scanner"])
+async def get_ports(ip_address: str):
+    """Get cached port scan results for a device."""
+    results = get_cached_ports(ip_address)
+    return [r.to_dict() for r in results]
+
+
+@app.get("/api/ports", tags=["Port Scanner"])
+async def get_all_ports():
+    """Get all cached port scan results."""
+    return get_all_cached_ports()
+
+
+@app.delete("/api/ports/cache", tags=["Port Scanner"])
+async def clear_ports_cache(ip: Optional[str] = None):
+    """Clear port scan cache."""
+    clear_port_cache(ip)
+    return {"cleared": True}
+
+
+# ---------------------------------------------------------------------------
+# Vulnerability / Security assessment endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/security/assess/{ip_address}", tags=["Security"])
+async def assess_device_security(ip_address: str, mac: str = ""):
+    """Run a security assessment on a specific device."""
+    ports = get_cached_ports(ip_address)
+    if not ports:
+        ports = await scan_device_ports(ip_address, mac)
+    assessment = assess_device(ip_address, mac, ports)
+    return assessment.to_dict()
+
+
+@app.get("/api/security/grade", tags=["Security"])
+async def get_security_grade():
+    """Get the network-wide security grade (A-F)."""
+    all_ports = get_all_cached_ports()
+    assessments: list[DeviceAssessment] = []
+    for ip, ports_data in all_ports.items():
+        from port_scanner import PortScanResult
+        port_results = [
+            PortScanResult(
+                ip_address=p["ip_address"],
+                mac_address=p.get("mac_address", ""),
+                port=p["port"],
+                protocol=p["protocol"],
+                state=p["state"],
+                service_name=p["service_name"],
+                service_version=p.get("service_version", ""),
+                banner=p.get("banner", ""),
+                risk_level=p.get("risk_level", "LOW"),
+            )
+            for p in ports_data
+        ]
+        mac = ports_data[0].get("mac_address", "") if ports_data else ""
+        assessments.append(assess_device(ip, mac, port_results))
+
+    return calculate_network_grade(assessments)
+
+
+@app.get("/api/security/scan-all", tags=["Security"])
+async def scan_all_devices():
+    """Scan ports on all discovered devices and return assessments."""
+    discovered = get_last_scan_results()
+    assessments: list[dict] = []
+
+    for device in discovered:
+        if not device.ip_address:
+            continue
+        ports = await scan_device_ports(device.ip_address, device.mac_address)
+        assessment = assess_device(device.ip_address, device.mac_address, ports)
+        assessments.append(assessment.to_dict())
+
+    grade = calculate_network_grade([
+        DeviceAssessment(**{k: v if k != "vulnerabilities" else [] for k, v in a.items()})
+        for a in assessments
+    ] if assessments else [])
+
+    return {
+        "assessments": assessments,
+        "grade": grade,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Bandwidth monitoring endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/bandwidth", tags=["Bandwidth"])
+async def get_bandwidth():
+    """Get current bandwidth usage for all devices."""
+    return bandwidth_tracker.get_current_usage()
+
+
+@app.get("/api/bandwidth/top-talkers", tags=["Bandwidth"])
+async def get_top_talkers(limit: int = Query(10, ge=1, le=50)):
+    """Get top N devices by bandwidth usage."""
+    return bandwidth_tracker.get_top_talkers(limit)
+
+
+@app.get("/api/bandwidth/protocols", tags=["Bandwidth"])
+async def get_protocols(mac: Optional[str] = None):
+    """Get protocol distribution (aggregate or per-device)."""
+    return bandwidth_tracker.get_protocol_distribution(mac)
+
+
+@app.get("/api/bandwidth/connections", tags=["Bandwidth"])
+async def get_connections(mac: Optional[str] = None):
+    """Get active connections, optionally filtered by source MAC."""
+    return bandwidth_tracker.get_connections(mac)
+
+
+@app.get("/api/bandwidth/history", tags=["Bandwidth"])
+async def get_bandwidth_history(
+    mac: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=1000),
+):
+    """Get bandwidth history, optionally filtered by MAC."""
+    return bandwidth_tracker.get_history(mac, limit)
+
+
+@app.get("/api/bandwidth/dns", tags=["Bandwidth"])
+async def get_dns_queries(
+    mac: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Get recent DNS queries, optionally filtered by MAC."""
+    return bandwidth_tracker.get_dns_queries(mac, limit)
+
+
+# ---------------------------------------------------------------------------
+# Smart alerts endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/alerts", tags=["Alerts"])
+async def api_get_alerts(
+    category: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Get recent alerts with optional filtering."""
+    return get_recent_alerts(category, severity, status, limit)
+
+
+@app.get("/api/alerts/counts", tags=["Alerts"])
+async def api_alert_counts():
+    """Get counts of active alerts by category and severity."""
+    return get_alert_counts()
+
+
+@app.post("/api/alerts/{alert_id}/acknowledge", tags=["Alerts"])
+async def api_acknowledge_alert(alert_id: int):
+    """Acknowledge an alert."""
+    success = acknowledge_alert_by_index(alert_id)
+    if not success:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"acknowledged": True}
+
+
+@app.post("/api/alerts/{alert_id}/resolve", tags=["Alerts"])
+async def api_resolve_alert(alert_id: int):
+    """Resolve an alert."""
+    success = resolve_alert_by_index(alert_id)
+    if not success:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"resolved": True}
+
+
+# ---------------------------------------------------------------------------
+# Health monitoring endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health", tags=["Health"])
+async def api_health():
+    """Get the most recent health check results."""
+    return {
+        "checks": get_last_health(),
+        "score": get_health_score(),
+    }
+
+
+@app.get("/api/health/score", tags=["Health"])
+async def api_health_score():
+    """Get the network health score."""
+    return get_health_score()
+
+
+@app.get("/api/health/history", tags=["Health"])
+async def api_health_history(
+    check_type: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Get health check history."""
+    return get_health_history(check_type, limit)
+
+
+@app.post("/api/health/check", tags=["Health"])
+async def api_run_health_check():
+    """Trigger an immediate health check."""
+    results = await run_health_checks()
+    return {
+        "checks": [r.to_dict() for r in results],
+        "score": get_health_score(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -959,7 +1316,6 @@ async def api_toggle_protection(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Device not found")
 
-    status = "enabled" if result["is_protected"] else "disabled"
     await ws_manager.broadcast({
         "type": "protection_toggle",
         "device_id": device_id,
@@ -1044,6 +1400,49 @@ async def api_protection_summary(session=Depends(get_session)):
 
 
 # ---------------------------------------------------------------------------
+# Device detail endpoint (aggregated view)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/device-detail/{ip_address}", tags=["Device Detail"])
+async def api_device_detail(ip_address: str, session=Depends(get_session)):
+    """Get comprehensive device details including ports, bandwidth, and alerts."""
+    # Find device by IP
+    result = await session.execute(
+        select(Device).where(Device.ip_address == ip_address)
+    )
+    device = result.scalar_one_or_none()
+    device_data = device.to_dict() if device else {"ip_address": ip_address}
+
+    # Get port scan results
+    ports = get_cached_ports(ip_address)
+    port_data = [p.to_dict() for p in ports]
+
+    # Get security assessment
+    from vulnerability import assess_device as _assess
+    assessment = _assess(ip_address, device_data.get("mac_address", ""), ports)
+
+    # Get bandwidth data
+    mac = device_data.get("mac_address", "")
+    bw_data = bandwidth_tracker.get_history(mac, limit=50) if mac else []
+    connections = bandwidth_tracker.get_connections(mac) if mac else []
+
+    # Get recent alerts for this device
+    device_alerts = [
+        a for a in get_recent_alerts(limit=50)
+        if a.get("source_ip") == ip_address or a.get("source_mac") == mac
+    ]
+
+    return {
+        "device": device_data,
+        "ports": port_data,
+        "assessment": assessment.to_dict(),
+        "bandwidth_history": bw_data,
+        "connections": connections,
+        "alerts": device_alerts[:20],
+    }
+
+
+# ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------
 
@@ -1061,7 +1460,8 @@ async def websocket_endpoint(websocket: WebSocket):
         "traffic": [...],
         "alerts": [...],
         "active_devices": N,
-        "ws_clients": N
+        "ws_clients": N,
+        "alert_counts": {...}
       }
     """
     await ws_manager.connect(websocket)

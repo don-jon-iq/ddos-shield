@@ -13,20 +13,47 @@ import {
   WifiOff,
   ServerCog,
   Settings,
+  Search,
+  BarChart3,
+  ShieldAlert,
+  Bell,
 } from 'lucide-react'
 import { clearToken } from '../utils/api'
 
-const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', icon: Activity },
-  { id: 'device-manager', label: 'Devices', icon: ServerCog },
-  { id: 'protection', label: 'Protection', icon: ShieldCheck },
-  { id: 'devices', label: 'Traffic Monitor', icon: Monitor },
-  { id: 'alerts', label: 'Attack Alerts', icon: AlertTriangle },
-  { id: 'history', label: 'Attack History', icon: History },
-  { id: 'topology', label: 'Network Map', icon: Network },
-  { id: 'rescue', label: 'Rescue Panel', icon: Wrench },
-  { id: 'educational', label: 'Learn', icon: BookOpen },
-  { id: 'settings', label: 'Settings', icon: Settings },
+const NAV_SECTIONS = [
+  {
+    title: 'Overview',
+    items: [
+      { id: 'dashboard', label: 'Dashboard', icon: Activity },
+    ],
+  },
+  {
+    title: 'Network',
+    items: [
+      { id: 'discovery', label: 'Discovery', icon: Search },
+      { id: 'bandwidth', label: 'Bandwidth', icon: BarChart3 },
+      { id: 'topology', label: 'Network Map', icon: Network },
+      { id: 'devices', label: 'Traffic Monitor', icon: Monitor },
+    ],
+  },
+  {
+    title: 'Security',
+    items: [
+      { id: 'security', label: 'Security Audit', icon: ShieldAlert },
+      { id: 'alert-center', label: 'Alert Center', icon: Bell },
+      { id: 'protection', label: 'Protection', icon: ShieldCheck },
+      { id: 'alerts', label: 'Attack Alerts', icon: AlertTriangle },
+      { id: 'rescue', label: 'Rescue Panel', icon: Wrench },
+    ],
+  },
+  {
+    title: 'Management',
+    items: [
+      { id: 'device-manager', label: 'Devices', icon: ServerCog },
+      { id: 'history', label: 'Attack History', icon: History },
+      { id: 'educational', label: 'Learn', icon: BookOpen },
+    ],
+  },
 ]
 
 export default function Sidebar({ active, onNavigate, connected, onLogout }) {
@@ -61,24 +88,31 @@ export default function Sidebar({ active, onNavigate, connected, onLogout }) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-2 overflow-y-auto">
-        {NAV_ITEMS.filter((item) => item.id !== 'settings').map(({ id, label, icon: Icon }) => {
-          const isActive = active === id
-          return (
-            <button
-              key={id}
-              onClick={() => onNavigate(id)}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-all ${
-                isActive
-                  ? 'text-matrix-green bg-matrix-green/10 border-r-2 border-matrix-green'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {label}
-            </button>
-          )
-        })}
+      <nav className="flex-1 py-1 overflow-y-auto">
+        {NAV_SECTIONS.map((section) => (
+          <div key={section.title}>
+            <div className="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
+              {section.title}
+            </div>
+            {section.items.map(({ id, label, icon: Icon }) => {
+              const isActive = active === id
+              return (
+                <button
+                  key={id}
+                  onClick={() => onNavigate(id)}
+                  className={`w-full flex items-center gap-3 px-4 py-2 text-sm transition-all ${
+                    isActive
+                      ? 'text-matrix-green bg-matrix-green/10 border-r-2 border-matrix-green'
+                      : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* Settings + Logout */}

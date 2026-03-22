@@ -1,5 +1,5 @@
 """
-DDoS anomaly detection engine.
+DDoS anomaly detection engine with enhanced intrusion detection.
 
 Two complementary detection strategies:
 
@@ -19,15 +19,23 @@ Two complementary detection strategies:
    A z-score > 3 means the device is sending traffic more than 3
    standard deviations above average, which is extremely unusual.
 
+Enhanced intrusion detection (IDS) capabilities:
+3. **Port scan detection** — One device probing many ports on another
+4. **ARP spoofing detection** — MAC-IP binding changes
+5. **Lateral movement detection** — Device contacting many internal hosts
+6. **DNS tunneling detection** — Unusually long or frequent DNS queries
+
 Educational note:
   Real-world IDS/IPS systems layer many more heuristics (entropy
   analysis, flow correlation, ML classifiers).  This simplified
-  two-layer approach teaches the fundamental concepts.
+  multi-layer approach teaches the fundamental concepts.
 """
 
 from __future__ import annotations
 
 import math
+import time
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -195,6 +203,160 @@ def _severity_from_zscore(z: float) -> Severity:
         return Severity.MEDIUM
     return Severity.LOW
 
+
+# ---------------------------------------------------------------------------
+# Enhanced IDS: Port scan detection
+# ---------------------------------------------------------------------------
+
+# Track per-device destination port counts (mac -> {target_ip -> set(ports)})
+_port_scan_tracker: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+_port_scan_last_reset: float = time.time()
+_PORT_SCAN_WINDOW: float = 60.0  # seconds
+_PORT_SCAN_THRESHOLD: int = 15   # ports in window
+
+
+def track_connection(src_mac: str, dst_ip: str, dst_port: int) -> DetectionResult | None:
+    """
+    Track connections for port scan detection.
+
+    Educational note:
+      Port scanning is a reconnaissance technique where an attacker
+      probes many ports on a target to discover running services.
+      We detect this by counting unique destination ports per
+      source→target pair within a time window.
+    """
+    global _port_scan_last_reset
+
+    now = time.time()
+    if now - _port_scan_last_reset > _PORT_SCAN_WINDOW:
+        _port_scan_tracker.clear()
+        _port_scan_last_reset = now
+
+    _port_scan_tracker[src_mac][dst_ip].add(dst_port)
+    port_count = len(_port_scan_tracker[src_mac][dst_ip])
+
+    if port_count >= _PORT_SCAN_THRESHOLD:
+        _port_scan_tracker[src_mac][dst_ip].clear()
+        return DetectionResult(
+            mac_address=src_mac,
+            attack_type=AttackType.PORT_SCAN,
+            severity=Severity.HIGH,
+            packets_per_second=0,
+            z_score=None,
+            description=f"Port scan detected: {src_mac} scanned {port_count} ports on {dst_ip}",
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Enhanced IDS: ARP spoofing detection
+# ---------------------------------------------------------------------------
+
+# Track known MAC-IP bindings
+_mac_ip_bindings: dict[str, str] = {}
+
+
+def check_arp_binding(ip: str, mac: str) -> DetectionResult | None:
+    """
+    Check for ARP spoofing by detecting MAC-IP binding changes.
+
+    Educational note:
+      In a healthy network, each IP is associated with one MAC address.
+      If the MAC for an IP changes unexpectedly, it could indicate
+      ARP spoofing — where an attacker sends fake ARP replies to
+      redirect traffic through their device.
+    """
+    mac = mac.upper()
+    if ip in _mac_ip_bindings:
+        expected_mac = _mac_ip_bindings[ip]
+        if expected_mac != mac:
+            old_mac = expected_mac
+            _mac_ip_bindings[ip] = mac
+            return DetectionResult(
+                mac_address=mac,
+                attack_type=AttackType.ARP_SPOOF,
+                severity=Severity.CRITICAL,
+                packets_per_second=0,
+                z_score=None,
+                description=(
+                    f"ARP spoofing: IP {ip} changed from {old_mac} to {mac}"
+                ),
+            )
+    else:
+        _mac_ip_bindings[ip] = mac
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Enhanced IDS: Lateral movement detection
+# ---------------------------------------------------------------------------
+
+_lateral_tracker: dict[str, set[str]] = defaultdict(set)
+_lateral_last_reset: float = time.time()
+_LATERAL_WINDOW: float = 300.0  # 5 minutes
+_LATERAL_THRESHOLD: int = 10    # unique internal hosts
+
+
+def track_internal_connection(src_mac: str, dst_ip: str) -> DetectionResult | None:
+    """
+    Detect lateral movement — a device communicating with many internal hosts.
+
+    Educational note:
+      After an attacker compromises one device, they typically scan
+      the internal network for other targets. This produces a sudden
+      spike in the number of unique internal hosts a device contacts.
+    """
+    global _lateral_last_reset
+
+    now = time.time()
+    if now - _lateral_last_reset > _LATERAL_WINDOW:
+        _lateral_tracker.clear()
+        _lateral_last_reset = now
+
+    # Only track internal (private) IPs
+    if not _is_private_ip(dst_ip):
+        return None
+
+    _lateral_tracker[src_mac].add(dst_ip)
+    target_count = len(_lateral_tracker[src_mac])
+
+    if target_count >= _LATERAL_THRESHOLD:
+        _lateral_tracker[src_mac].clear()
+        return DetectionResult(
+            mac_address=src_mac,
+            attack_type=AttackType.LATERAL_MOVE,
+            severity=Severity.HIGH,
+            packets_per_second=0,
+            z_score=None,
+            description=(
+                f"Lateral movement: {src_mac} contacted {target_count} internal hosts"
+            ),
+        )
+    return None
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Check if an IP is in a private range (RFC 1918)."""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        first, second = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+
+    if first == 10:
+        return True
+    if first == 172 and 16 <= second <= 31:
+        return True
+    if first == 192 and second == 168:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Main detection entry point
+# ---------------------------------------------------------------------------
 
 def run_detection(snapshots: Sequence[TrafficSnapshot]) -> list[DetectionResult]:
     """

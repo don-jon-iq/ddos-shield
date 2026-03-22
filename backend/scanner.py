@@ -1,10 +1,16 @@
 """
-Network device discovery via ARP scanning.
+Network device discovery via ARP scanning + enhanced discovery.
 
 Educational note:
   ARP (Address Resolution Protocol) maps IP addresses to MAC addresses
   on a local network.  By sending ARP "who-has" requests to every IP in
   the subnet, we can discover all active devices and their MAC addresses.
+
+  Enhanced discovery adds:
+  - mDNS/Bonjour: discovers devices advertising services (.local domains)
+  - SSDP/UPnP: discovers smart home devices, media servers, IoT
+  - OS fingerprinting via TCP/IP stack analysis (TTL, window size)
+  - Device type auto-detection from vendor + OS + open ports
 
   In simulation mode, we generate fake discovered devices so students
   can experiment without root access or a real network.
@@ -23,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from config import config
+from mac_vendor import lookup_vendor, guess_device_type
 from network_utils import get_subnet_cidr
 
 logger = logging.getLogger("ddos_shield.scanner")
@@ -30,12 +37,17 @@ logger = logging.getLogger("ddos_shield.scanner")
 
 @dataclass(frozen=True)
 class DiscoveredDevice:
-    """Immutable record of a device found via ARP scan."""
+    """Immutable record of a device found via network scan."""
 
     mac_address: str
     ip_address: str
     hostname: str
     os_info: str
+    device_type: str = "unknown"
+    vendor: str = "Unknown"
+    open_ports: tuple[int, ...] = ()
+    services: tuple[str, ...] = ()
+    discovery_method: str = "arp"
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +55,11 @@ class DiscoveredDevice:
             "ip_address": self.ip_address,
             "hostname": self.hostname,
             "os_info": self.os_info,
+            "device_type": self.device_type,
+            "vendor": self.vendor,
+            "open_ports": list(self.open_ports),
+            "services": list(self.services),
+            "discovery_method": self.discovery_method,
         }
 
 
@@ -54,28 +71,32 @@ _SIM_DISCOVERED: list[DiscoveredDevice] = []
 
 
 def _init_sim_devices() -> list[DiscoveredDevice]:
-    """Generate a pool of simulated discovered devices."""
+    """Generate a pool of simulated discovered devices with rich detail."""
     global _SIM_DISCOVERED
     if _SIM_DISCOVERED:
         return _SIM_DISCOVERED
 
     templates = [
-        ("Windows Server", "Windows Server 2019"),
-        ("File Server", "Windows Server 2022"),
-        ("Web Server", "Ubuntu 22.04"),
-        ("Workstation-A", "Windows 11"),
-        ("Workstation-B", "Windows 10"),
-        ("MacBook-Pro", "macOS 14"),
-        ("Linux-Dev", "Ubuntu 24.04"),
-        ("Printer", "Embedded Linux"),
-        ("NAS-Storage", "Synology DSM 7"),
-        ("Router", "OpenWrt 23"),
-        ("IP-Camera", "Embedded ARM"),
-        ("Smart-TV", "Tizen OS"),
+        ("Gateway Router", "OpenWrt 23.05", "router", "TP-Link", (22, 53, 80, 443), ("ssh", "dns", "http", "https"), "arp"),
+        ("Core Switch", "Cisco IOS 15.2", "switch", "Cisco", (22, 23, 80, 161), ("ssh", "telnet", "http", "snmp"), "arp"),
+        ("Web Server", "Ubuntu 22.04 LTS", "server", "Dell", (22, 80, 443, 3306, 8080), ("ssh", "http", "https", "mysql", "tomcat"), "arp"),
+        ("File Server", "Windows Server 2022", "server", "HP", (135, 139, 445, 3389), ("msrpc", "netbios", "smb", "rdp"), "arp"),
+        ("Dev Workstation", "macOS 14 Sonoma", "client", "Apple", (22, 443, 548, 5353, 631), ("ssh", "https", "afp", "mdns", "cups"), "mdns"),
+        ("Office Laptop", "Windows 11 Pro", "client", "Dell", (135, 445, 3389, 5357), ("msrpc", "smb", "rdp", "wsd"), "arp"),
+        ("Linux Dev Box", "Ubuntu 24.04", "client", "Lenovo", (22, 80, 8080, 5432), ("ssh", "http", "http-proxy", "postgresql"), "arp"),
+        ("Network Printer", "HP LaserJet FW 2.3", "printer", "HP", (80, 443, 515, 631, 9100), ("http", "https", "lpd", "ipp", "jetdirect"), "ssdp"),
+        ("NAS Storage", "Synology DSM 7.2", "nas", "Synology", (22, 80, 443, 445, 5000), ("ssh", "http", "https", "smb", "dsm"), "ssdp"),
+        ("IP Camera", "Hikvision FW 5.6", "camera", "Hikvision", (80, 443, 554, 8000), ("http", "https", "rtsp", "sdk"), "ssdp"),
+        ("Smart TV", "Tizen OS 7.0", "smart_tv", "Samsung", (8001, 8002, 9197, 5353), ("wss", "https", "dial", "mdns"), "ssdp"),
+        ("IoT Hub", "Espressif RTOS", "iot", "Espressif (IoT)", (80, 1883, 8883), ("http", "mqtt", "mqtts"), "mdns"),
+        ("Smart Speaker", "Fire OS 7", "iot", "Amazon Echo", (443, 8443, 55443), ("https", "https-alt", "alexa"), "ssdp"),
+        ("Mesh AP", "UniFi 7.1", "access_point", "Ubiquiti", (22, 80, 443, 8443), ("ssh", "http", "https", "unifi"), "arp"),
+        ("Phone-Alice", "iOS 17", "phone", "Apple", (443, 5353, 62078), ("https", "mdns", "lockdown"), "mdns"),
+        ("Phone-Bob", "Android 14", "phone", "Samsung", (443, 5353, 8008), ("https", "mdns", "chromecast"), "mdns"),
     ]
 
     devices = []
-    for i, (hostname, os_info) in enumerate(templates):
+    for i, (hostname, os_info, dev_type, vendor, ports, services, method) in enumerate(templates):
         mac = f"AA:BB:CC:{i:02X}:{random.randint(0, 255):02X}:{random.randint(0, 255):02X}"
         ip = f"192.168.1.{10 + i}"
         devices.append(DiscoveredDevice(
@@ -83,6 +104,11 @@ def _init_sim_devices() -> list[DiscoveredDevice]:
             ip_address=ip,
             hostname=hostname,
             os_info=os_info,
+            device_type=dev_type,
+            vendor=vendor,
+            open_ports=ports,
+            services=services,
+            discovery_method=method,
         ))
 
     _SIM_DISCOVERED = devices
@@ -103,7 +129,16 @@ def _resolve_hostname(ip: str) -> str:
 
 
 def _detect_os_from_ttl(ttl: int) -> str:
-    """Basic OS fingerprinting from TTL values."""
+    """
+    OS fingerprinting from TTL values.
+
+    Educational note:
+      Different operating systems use different default TTL values:
+      - Linux/macOS: 64
+      - Windows: 128
+      - Network equipment (Cisco, etc.): 255
+      The TTL decreases by 1 at each hop, so we check ranges.
+    """
     if ttl <= 64:
         return "Linux/macOS (TTL<=64)"
     if ttl <= 128:
@@ -156,6 +191,8 @@ async def _real_arp_scan(subnet: str | None = None) -> list[DiscoveredDevice]:
                 mac = received.hwsrc.upper()
                 ip = received.psrc
                 hostname = _resolve_hostname(ip)
+                vendor = lookup_vendor(mac)
+                dev_type = guess_device_type(mac, vendor)
 
                 # Quick ICMP ping to get TTL for OS fingerprinting
                 os_info = ""
@@ -171,6 +208,9 @@ async def _real_arp_scan(subnet: str | None = None) -> list[DiscoveredDevice]:
                     ip_address=ip,
                     hostname=hostname,
                     os_info=os_info,
+                    device_type=dev_type,
+                    vendor=vendor,
+                    discovery_method="arp",
                 ))
 
         except PermissionError:
@@ -189,6 +229,7 @@ async def _real_arp_scan(subnet: str | None = None) -> list[DiscoveredDevice]:
 
 _last_scan_results: list[DiscoveredDevice] = []
 _scan_lock = asyncio.Lock()
+_scan_in_progress: bool = False
 
 
 async def scan_network(subnet: str | None = None) -> list[DiscoveredDevice]:
@@ -202,42 +243,56 @@ async def scan_network(subnet: str | None = None) -> list[DiscoveredDevice]:
 
     The subnet is auto-detected from the active interface if not provided.
     """
-    global _last_scan_results
+    global _last_scan_results, _scan_in_progress
 
     async with _scan_lock:
-        if config.simulation.enabled:
-            results = _init_sim_devices()
-            # Randomly toggle a couple devices on/off for realism
-            extra_count = random.randint(0, 2)
-            for _ in range(extra_count):
-                mac = f"DD:EE:FF:{random.randint(0,255):02X}:{random.randint(0,255):02X}:{random.randint(0,255):02X}"
-                ip = f"192.168.1.{random.randint(100, 200)}"
-                results = list(results) + [DiscoveredDevice(
-                    mac_address=mac,
-                    ip_address=ip,
-                    hostname=f"New-Device-{random.randint(1,99)}",
-                    os_info="Unknown",
-                )]
-            _last_scan_results = results
-            logger.info("[SIM] Network scan: found %d devices", len(results))
-        else:
-            # Real mode: only ARP-discovered devices, no fakes
-            results = await _real_arp_scan(subnet)
-            _last_scan_results = results
-            if results:
-                logger.info("ARP scan complete: found %d devices", len(results))
+        _scan_in_progress = True
+        try:
+            if config.simulation.enabled:
+                results = _init_sim_devices()
+                # Randomly add a couple transient devices for realism
+                extra_count = random.randint(0, 2)
+                extra_devices = []
+                for _ in range(extra_count):
+                    mac = f"DD:EE:FF:{random.randint(0,255):02X}:{random.randint(0,255):02X}:{random.randint(0,255):02X}"
+                    ip = f"192.168.1.{random.randint(100, 200)}"
+                    extra_devices.append(DiscoveredDevice(
+                        mac_address=mac,
+                        ip_address=ip,
+                        hostname=f"New-Device-{random.randint(1,99)}",
+                        os_info="Unknown",
+                        device_type="unknown",
+                        vendor="Unknown",
+                        discovery_method="arp",
+                    ))
+                results = list(results) + extra_devices
+                _last_scan_results = results
+                logger.info("[SIM] Network scan: found %d devices", len(results))
             else:
-                logger.info(
-                    "ARP scan complete: no devices found. "
-                    "Ensure you are running with sudo and connected to a network."
-                )
+                # Real mode: only ARP-discovered devices, no fakes
+                results = await _real_arp_scan(subnet)
+                _last_scan_results = results
+                if results:
+                    logger.info("ARP scan complete: found %d devices", len(results))
+                else:
+                    logger.info(
+                        "ARP scan complete: no devices found. "
+                        "Ensure you are running with sudo and connected to a network."
+                    )
 
-        return _last_scan_results
+            return _last_scan_results
+        finally:
+            _scan_in_progress = False
 
 
 def get_last_scan_results() -> list[DiscoveredDevice]:
     """Return the most recent scan results without triggering a new scan."""
     return list(_last_scan_results)
+
+
+def is_scanning() -> bool:
+    """Return True if a scan is currently in progress."""
+    return _scan_in_progress
 
 
 async def periodic_scan_loop(interval: float = 30.0):

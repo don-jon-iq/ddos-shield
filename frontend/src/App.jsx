@@ -14,16 +14,27 @@ import RescuePanel from './components/RescuePanel'
 import EducationalPopup from './components/EducationalPopup'
 import EducationalPage from './components/EducationalPage'
 import Settings from './components/Settings'
+import NetworkDiscovery from './components/NetworkDiscovery'
+import BandwidthMonitor from './components/BandwidthMonitor'
+import SecurityAudit from './components/SecurityAudit'
+import AlertCenter from './components/AlertCenter'
+import DeviceDetail from './components/DeviceDetail'
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(isAuthenticated())
   const [page, setPage] = useState('dashboard')
   const [educationalPopup, setEducationalPopup] = useState(null)
+  const [selectedDeviceMAC, setSelectedDeviceMAC] = useState(null)
 
   const ws = useWebSocket()
 
   if (!loggedIn) {
     return <LoginPage onLogin={() => setLoggedIn(true)} />
+  }
+
+  const openDeviceDetail = (mac) => {
+    setSelectedDeviceMAC(mac)
+    setPage('device-detail')
   }
 
   const renderPage = () => {
@@ -37,6 +48,21 @@ export default function App() {
             trafficHistory={ws.trafficHistory}
             activeDevices={ws.activeDevices}
             wsClients={ws.wsClients}
+          />
+        )
+      case 'discovery':
+        return <NetworkDiscovery onDeviceClick={openDeviceDetail} />
+      case 'bandwidth':
+        return <BandwidthMonitor />
+      case 'security':
+        return <SecurityAudit onDeviceClick={openDeviceDetail} />
+      case 'alert-center':
+        return <AlertCenter />
+      case 'device-detail':
+        return (
+          <DeviceDetail
+            mac={selectedDeviceMAC}
+            onBack={() => setPage('discovery')}
           />
         )
       case 'device-manager':

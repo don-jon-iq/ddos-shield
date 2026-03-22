@@ -20,6 +20,13 @@ Educational note:
   4. Every `window_seconds` we compute packets-per-second rates and
      feed them to the detector.
 
+  **Bandwidth tracking (NEW):**
+  In addition to attack-focused counters, the sniffer now tracks:
+  - Per-device upload/download bytes
+  - Protocol distribution (HTTP, HTTPS, DNS, SSH, etc.)
+  - Connection pairs (who talks to whom)
+  - DNS queries (what domains devices resolve)
+
   **Simulation mode:**
   When SIMULATION_MODE=true, we skip real packet capture and instead
   generate synthetic traffic that mimics realistic network patterns,
@@ -62,6 +69,16 @@ class _MacCounters:
     total_bytes: int = 0
     ip_address: str = ""
     dst_ip: str = ""
+    # Enhanced bandwidth tracking
+    bytes_sent: int = 0
+    bytes_received: int = 0
+    packets_sent: int = 0
+    packets_received: int = 0
+    http_bytes: int = 0
+    https_bytes: int = 0
+    dns_bytes: int = 0
+    ssh_bytes: int = 0
+    other_bytes: int = 0
 
     @property
     def total(self) -> int:
@@ -100,6 +117,10 @@ def auto_detect_interface() -> str | None:
 # Real packet capture (requires root / CAP_NET_RAW)
 # ---------------------------------------------------------------------------
 
+# Reference to bandwidth tracker (set during start)
+_bandwidth_tracker = None
+
+
 def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.Event):
     """
     Start Scapy packet sniffing in a background thread.
@@ -110,7 +131,7 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
       On macOS, requires sudo. On Linux, requires root or CAP_NET_RAW.
     """
     try:
-        from scapy.all import ARP, ICMP, IP, TCP, UDP, Ether, sniff, conf  # type: ignore
+        from scapy.all import ARP, ICMP, IP, TCP, UDP, Ether, DNS, DNSQR, sniff, conf  # type: ignore
     except ImportError:
         logger.error(
             "Scapy not installed. Install with: pip install scapy  "
@@ -131,12 +152,14 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
             return
 
         src_mac = pkt[Ether].src.upper()
-        dst_mac = pkt[Ether].dst.upper()
         c = counters.setdefault(src_mac, _MacCounters())
         pkt_len = len(pkt)
         c.total_bytes += pkt_len
+        c.bytes_sent += pkt_len
+        c.packets_sent += 1
 
         # Capture source and destination IP addresses
+        dst_port = 0
         if pkt.haslayer(IP):
             if not c.ip_address:
                 c.ip_address = pkt[IP].src
@@ -146,16 +169,55 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
             c.arp += 1
         elif pkt.haslayer(TCP):
             tcp = pkt[TCP]
+            dst_port = tcp.dport
             # SYN flag = 0x02, check for SYN without ACK
             if tcp.flags & 0x02 and not (tcp.flags & 0x10):
                 c.syn += 1
             # HTTP on ports 80 or 443
             if tcp.dport in (80, 443) or tcp.sport in (80, 443):
                 c.http += 1
+
+            # Protocol byte tracking
+            if tcp.dport == 80 or tcp.sport == 80:
+                c.http_bytes += pkt_len
+            elif tcp.dport == 443 or tcp.sport == 443:
+                c.https_bytes += pkt_len
+            elif tcp.dport == 22 or tcp.sport == 22:
+                c.ssh_bytes += pkt_len
+            else:
+                c.other_bytes += pkt_len
+
         elif pkt.haslayer(UDP):
             c.udp += 1
+            udp = pkt[UDP]
+            dst_port = udp.dport
+            if udp.dport == 53 or udp.sport == 53:
+                c.dns_bytes += pkt_len
+                # DNS query logging
+                if pkt.haslayer(DNSQR) and _bandwidth_tracker:
+                    try:
+                        domain = pkt[DNSQR].qname.decode("utf-8", errors="replace").rstrip(".")
+                        qtype = str(pkt[DNSQR].qtype)
+                        _bandwidth_tracker.record_dns_query(src_mac, c.ip_address, domain, qtype)
+                    except Exception:
+                        pass
+            else:
+                c.other_bytes += pkt_len
         elif pkt.haslayer(ICMP):
             c.icmp += 1
+            c.other_bytes += pkt_len
+
+        # Record to bandwidth tracker if available
+        if _bandwidth_tracker and c.ip_address and c.dst_ip:
+            _bandwidth_tracker.record_packet(
+                src_mac=src_mac,
+                src_ip=c.ip_address,
+                dst_ip=c.dst_ip,
+                dst_port=dst_port,
+                protocol="TCP" if pkt.haslayer(TCP) else "UDP" if pkt.haslayer(UDP) else "OTHER",
+                pkt_len=pkt_len,
+                is_outbound=True,
+            )
 
     iface = auto_detect_interface()
     bpf = config.sniffer.bpf_filter or None
@@ -257,6 +319,8 @@ def _simulate_tick(counters: dict[str, _MacCounters]):
             intensity = random.randint(200, 2000)
             setattr(c, attack, getattr(c, attack) + intensity)
             c.total_bytes += intensity * random.randint(40, 1500)
+            c.bytes_sent += intensity * random.randint(40, 1500)
+            c.packets_sent += intensity
         else:
             # Normal background traffic
             c.syn += random.randint(0, 5)
@@ -264,7 +328,29 @@ def _simulate_tick(counters: dict[str, _MacCounters]):
             c.icmp += random.randint(0, 3)
             c.http += random.randint(2, 20)
             c.arp += random.randint(0, 2)
-            c.total_bytes += random.randint(500, 5000)
+            normal_bytes = random.randint(500, 5000)
+            c.total_bytes += normal_bytes
+            c.bytes_sent += normal_bytes
+            c.packets_sent += random.randint(10, 60)
+            c.bytes_received += random.randint(500, 8000)
+            c.packets_received += random.randint(10, 50)
+            # Protocol distribution
+            c.https_bytes += random.randint(200, 3000)
+            c.http_bytes += random.randint(50, 500)
+            c.dns_bytes += random.randint(20, 200)
+            c.ssh_bytes += random.randint(0, 100)
+            c.other_bytes += random.randint(50, 500)
+
+        # Simulate bandwidth recording
+        if _bandwidth_tracker and c.ip_address:
+            dst_ip = c.dst_ip or f"10.0.0.{random.randint(1,254)}"
+            dst_port = random.choice([80, 443, 53, 22, 8080])
+            _bandwidth_tracker.record_packet(
+                src_mac=mac, src_ip=c.ip_address,
+                dst_ip=dst_ip, dst_port=dst_port,
+                protocol="TCP", pkt_len=random.randint(64, 1500),
+                is_outbound=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -283,8 +369,10 @@ class PacketSniffer:
         self._capture_task: asyncio.Task | None = None
         self._window_start: float = time.time()
 
-    async def start(self) -> None:
+    async def start(self, bw_tracker=None) -> None:
         """Begin capturing packets (real or simulated)."""
+        global _bandwidth_tracker
+        _bandwidth_tracker = bw_tracker
         self._window_start = time.time()
 
         if config.simulation.enabled:
