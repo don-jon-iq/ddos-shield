@@ -101,3 +101,50 @@
 .attack-blocked-flash {
   animation: blocked-flash 1s ease-out;
 }
+
+/* ── Topology Map Animations ── */
+
+/* Pulse animation for attack indicators and badges */
+@keyframes topology-pulse-kf {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.15); }
+}
+
+.topology-pulse {
+  animation: topology-pulse-kf 2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Animated dashes on active connections */
+@keyframes topology-dash-kf {
+  to { stroke-dashoffset: -20; }
+}
+
+.topology-dash-anim {
+  animation: topology-dash-kf 1.5s linear infinite;
+}
+
+/* Slide-in panel from right */
+@keyframes topology-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.topology-panel-slide {
+  animation: topology-slide-in 0.25s ease-out;
+}
+
+/* Fade-in for new device nodes */
+@keyframes topology-fade-in {
+  from { opacity: 0; transform: scale(0.7); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.topo-node {
+  animation: topology-fade-in 0.3s ease-out;
+  transition: transform 0.2s ease;
+}
+
+.topo-node:hover {
+  transform: scale(1.08);
+}
