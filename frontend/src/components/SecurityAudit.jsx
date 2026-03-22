@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  Shield, ShieldAlert, ShieldCheck, ShieldOff, AlertTriangle,
-  RefreshCw, Lock, Unlock, Info,
+  Shield, ShieldAlert, ShieldCheck, RefreshCw, Info, Wrench,
+  CheckCircle, Download,
 } from 'lucide-react'
-import { getSecurityGrade, scanAllDevices } from '../utils/api'
+import { getSecurityGrade, scanAllDevices, applyFix } from '../utils/api'
 
 const GRADE_COLORS = {
   A: 'text-matrix-green border-matrix-green',
@@ -66,19 +66,30 @@ export default function SecurityAudit() {
   const [assessments, setAssessments] = useState([])
   const [scanning, setScanning] = useState(false)
   const [expandedDevice, setExpandedDevice] = useState(null)
+  const [appliedFixes, setAppliedFixes] = useState({})
+  const [loading, setLoading] = useState(true)
 
-  const loadGrade = useCallback(async () => {
+  // Auto-load on mount
+  const loadData = useCallback(async () => {
     try {
-      const data = await getSecurityGrade()
-      setGradeData(data)
+      const result = await scanAllDevices()
+      setAssessments(result.assessments || [])
+      setGradeData(result.grade)
     } catch {
-      // not ready
+      // Try just the grade
+      try {
+        const grade = await getSecurityGrade()
+        setGradeData(grade)
+      } catch {
+        // not ready
+      }
     }
+    setLoading(false)
   }, [])
 
   useEffect(() => {
-    loadGrade()
-  }, [loadGrade])
+    loadData()
+  }, [loadData])
 
   const handleFullScan = async () => {
     setScanning(true)
@@ -92,22 +103,55 @@ export default function SecurityAudit() {
     setScanning(false)
   }
 
+  const handleApplyFix = async (ip, service, port) => {
+    const vulnId = `${service}-${port}`
+    try {
+      await applyFix(ip, vulnId)
+      setAppliedFixes(prev => ({
+        ...prev,
+        [`${ip}:${vulnId}`]: true,
+      }))
+    } catch {
+      // failed
+    }
+  }
+
   const grade = gradeData?.grade || '?'
   const score = gradeData?.score || 0
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <RefreshCw className="w-8 h-8 text-matrix-green animate-spin mx-auto mb-3" />
+          <p className="text-gray-500 text-sm">Loading security assessment...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-200">Security Audit</h1>
-        <button
-          onClick={handleFullScan}
-          disabled={scanning}
-          className="flex items-center gap-2 px-4 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
-          {scanning ? 'Scanning All Devices...' : 'Full Security Scan'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-2 px-3 py-2 text-gray-400 border border-cyber-border rounded-lg hover:bg-white/5 transition-colors text-sm"
+          >
+            <Download className="w-4 h-4" />
+            Export
+          </button>
+          <button
+            onClick={handleFullScan}
+            disabled={scanning}
+            className="flex items-center gap-2 px-4 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
+            {scanning ? 'Scanning...' : 'Re-scan All'}
+          </button>
+        </div>
       </div>
 
       {/* Grade + Summary */}
@@ -185,7 +229,9 @@ export default function SecurityAudit() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <ScoreBar score={device.security_score} />
+                      <div className="w-24">
+                        <ScoreBar score={device.security_score} />
+                      </div>
                       {device.vulnerabilities?.length > 0 ? (
                         <ShieldAlert className="w-5 h-5 text-warn-yellow" />
                       ) : (
@@ -197,35 +243,56 @@ export default function SecurityAudit() {
                   {isExpanded && device.vulnerabilities?.length > 0 && (
                     <div className="mt-4 space-y-2 border-t border-cyber-border pt-4">
                       <p className="text-xs text-gray-500 mb-2">{device.risk_summary}</p>
-                      {device.vulnerabilities.map((vuln, vi) => (
-                        <div
-                          key={vi}
-                          className={`p-3 rounded-lg border ${RISK_COLORS[vuln.risk_level] || RISK_COLORS.LOW}`}
-                        >
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-xs font-bold">
-                              Port {vuln.port} ({vuln.service})
-                            </span>
-                            <span className="text-[10px] font-bold uppercase">
-                              {vuln.risk_level}
-                            </span>
-                          </div>
-                          <p className="text-xs opacity-80">{vuln.description}</p>
-                          <div className="mt-2 flex items-start gap-1">
-                            <Info className="w-3 h-3 mt-0.5 flex-shrink-0 opacity-60" />
-                            <p className="text-[10px] opacity-60">{vuln.recommendation}</p>
-                          </div>
-                          {vuln.cve_examples?.length > 0 && (
-                            <div className="mt-1 flex gap-1 flex-wrap">
-                              {vuln.cve_examples.map((cve, ci) => (
-                                <span key={ci} className="text-[10px] px-1.5 py-0.5 rounded bg-black/30 font-mono">
-                                  {cve}
+                      {device.vulnerabilities.map((vuln, vi) => {
+                        const fixKey = `${device.ip_address}:${vuln.service}-${vuln.port}`
+                        const isFixed = appliedFixes[fixKey]
+                        return (
+                          <div
+                            key={vi}
+                            className={`p-3 rounded-lg border ${isFixed ? 'opacity-50 bg-matrix-green/5 border-matrix-green/20' : RISK_COLORS[vuln.risk_level] || RISK_COLORS.LOW}`}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-bold">
+                                Port {vuln.port} ({vuln.service})
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold uppercase">
+                                  {isFixed ? 'FIXED' : vuln.risk_level}
                                 </span>
-                              ))}
+                                {!isFixed && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      handleApplyFix(device.ip_address, vuln.service, vuln.port)
+                                    }}
+                                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-matrix-green/10 text-matrix-green border border-matrix-green/30 hover:bg-matrix-green/20 transition-colors"
+                                  >
+                                    <Wrench className="w-3 h-3" />
+                                    Apply Fix
+                                  </button>
+                                )}
+                                {isFixed && (
+                                  <CheckCircle className="w-4 h-4 text-matrix-green" />
+                                )}
+                              </div>
                             </div>
-                          )}
-                        </div>
-                      ))}
+                            <p className="text-xs opacity-80">{vuln.description}</p>
+                            <div className="mt-2 flex items-start gap-1">
+                              <Info className="w-3 h-3 mt-0.5 flex-shrink-0 opacity-60" />
+                              <p className="text-[10px] opacity-60">{vuln.recommendation}</p>
+                            </div>
+                            {vuln.cve_examples?.length > 0 && (
+                              <div className="mt-1 flex gap-1 flex-wrap">
+                                {vuln.cve_examples.map((cve, ci) => (
+                                  <span key={ci} className="text-[10px] px-1.5 py-0.5 rounded bg-black/30 font-mono">
+                                    {cve}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                 </div>
@@ -234,14 +301,14 @@ export default function SecurityAudit() {
         </div>
       )}
 
-      {assessments.length === 0 && !scanning && (
+      {assessments.length === 0 && !scanning && !loading && (
         <div className="cyber-card text-center py-12">
           <Shield className="w-12 h-12 text-gray-600 mx-auto mb-3" />
           <p className="text-gray-500 mb-2">
             No security assessments yet.
           </p>
           <p className="text-gray-600 text-sm">
-            Click "Full Security Scan" to scan all discovered devices for vulnerabilities.
+            Click "Re-scan All" to scan all discovered devices for vulnerabilities.
           </p>
         </div>
       )}

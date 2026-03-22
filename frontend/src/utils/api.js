@@ -216,3 +216,26 @@ export const runHealthCheck = () => request('/health/check', { method: 'POST' })
 // --- Device Detail ---
 export const getDeviceDetail = (ip) =>
   request(`/device-detail/${encodeURIComponent(ip)}`)
+
+// --- Remediation ---
+export const getRemediations = (ip, mac = '') =>
+  request(`/remediation/${encodeURIComponent(ip)}?mac=${encodeURIComponent(mac)}`)
+export const applyFix = (ip, vulnId) =>
+  request('/remediation/apply-fix', {
+    method: 'POST',
+    body: JSON.stringify({ ip_address: ip, vuln_id: vulnId }),
+  })
+export const getAppliedFixes = (ip) =>
+  request(`/remediation/fixes${ip ? `?ip=${encodeURIComponent(ip)}` : ''}`)
+export const getFirewallSuggestions = () => request('/firewall/suggestions')
+
+// --- Report ---
+export const getAuditReport = () => request('/report')
+
+// --- Simulation ---
+export const getScenarios = () => request('/simulation/scenarios')
+export const setScenario = (preset) =>
+  request('/simulation/scenario', {
+    method: 'POST',
+    body: JSON.stringify({ preset }),
+  })

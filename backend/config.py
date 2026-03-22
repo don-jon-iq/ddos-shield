@@ -12,8 +12,13 @@ import os
 from pathlib import Path
 from threading import Lock
 
+from dotenv import load_dotenv
+
 # Path to the .env file (project root)
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+# Load .env file into os.environ so all settings are available
+load_dotenv(_ENV_PATH, override=True)
 
 
 # ---------------------------------------------------------------------------

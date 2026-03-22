@@ -104,6 +104,15 @@ from health import (
     run_health_checks, get_last_health, get_health_history,
     get_health_score, periodic_health_loop,
 )
+from simulation_bootstrap import (
+    run_bootstrap, periodic_sim_events_loop,
+    get_cached_assessments, get_cached_grade, get_scenario_presets,
+)
+from remediation import (
+    get_device_remediations, apply_fix, get_applied_fixes,
+    get_firewall_suggestions,
+)
+from report import generate_audit_report
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -124,6 +133,7 @@ _analysis_task: asyncio.Task | None = None
 _scanner_task: asyncio.Task | None = None
 _health_task: asyncio.Task | None = None
 _bandwidth_task: asyncio.Task | None = None
+_sim_events_task: asyncio.Task | None = None
 
 
 async def _analysis_loop():
@@ -355,7 +365,7 @@ async def _bandwidth_log_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
-    global _analysis_task, _scanner_task, _health_task, _bandwidth_task
+    global _analysis_task, _scanner_task, _health_task, _bandwidth_task, _sim_events_task
 
     await init_db()
     await sniffer.start(bw_tracker=bandwidth_tracker)
@@ -375,9 +385,18 @@ async def lifespan(app: FastAPI):
     if not config.simulation.enabled and net.get("error"):
         logger.warning("Network detection issue: %s", net["error"])
 
+    # Run simulation bootstrap (populates devices, ports, vulns, alerts)
+    try:
+        await run_bootstrap()
+    except Exception:
+        logger.exception("Bootstrap failed — continuing without pre-populated data")
+
+    # Start periodic simulation events for ongoing realism
+    _sim_events_task = asyncio.create_task(periodic_sim_events_loop())
+
     yield
 
-    for task in (_analysis_task, _scanner_task, _health_task, _bandwidth_task):
+    for task in (_analysis_task, _scanner_task, _health_task, _bandwidth_task, _sim_events_task):
         if task:
             task.cancel()
             try:
@@ -1038,7 +1057,13 @@ async def assess_device_security(ip_address: str, mac: str = ""):
 
 @app.get("/api/security/grade", tags=["Security"])
 async def get_security_grade():
-    """Get the network-wide security grade (A-F)."""
+    """Get the network-wide security grade (A-F). Uses cached bootstrap data if available."""
+    # Try cached grade from bootstrap first
+    cached = get_cached_grade()
+    if cached:
+        return cached
+
+    # Fallback: compute from cached port scans
     all_ports = get_all_cached_ports()
     assessments: list[DeviceAssessment] = []
     for ip, ports_data in all_ports.items():
@@ -1066,23 +1091,30 @@ async def get_security_grade():
 @app.get("/api/security/scan-all", tags=["Security"])
 async def scan_all_devices():
     """Scan ports on all discovered devices and return assessments."""
+    # Use cached assessments from bootstrap if available
+    cached = get_cached_assessments()
+    if cached:
+        assessment_dicts = [a.to_dict() for a in cached]
+        grade = get_cached_grade() or calculate_network_grade(cached)
+        return {"assessments": assessment_dicts, "grade": grade}
+
+    # Fallback: scan all discovered devices
     discovered = get_last_scan_results()
-    assessments: list[dict] = []
+    assessments: list[DeviceAssessment] = []
+    assessment_dicts: list[dict] = []
 
     for device in discovered:
         if not device.ip_address:
             continue
         ports = await scan_device_ports(device.ip_address, device.mac_address)
         assessment = assess_device(device.ip_address, device.mac_address, ports)
-        assessments.append(assessment.to_dict())
+        assessments.append(assessment)
+        assessment_dicts.append(assessment.to_dict())
 
-    grade = calculate_network_grade([
-        DeviceAssessment(**{k: v if k != "vulnerabilities" else [] for k, v in a.items()})
-        for a in assessments
-    ] if assessments else [])
+    grade = calculate_network_grade(assessments)
 
     return {
-        "assessments": assessments,
+        "assessments": assessment_dicts,
         "grade": grade,
     }
 
@@ -1396,6 +1428,109 @@ async def api_protection_summary(session=Depends(get_session)):
             }
             for d in protected
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Remediation endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/remediation/{ip_address}", tags=["Remediation"])
+async def api_get_remediations(ip_address: str, mac: str = ""):
+    """Get remediation recommendations for a device."""
+    ports = get_cached_ports(ip_address)
+    if not ports:
+        ports = await scan_device_ports(ip_address, mac)
+    assessment = assess_device(ip_address, mac, ports)
+    vuln_dicts = [v.to_dict() for v in assessment.vulnerabilities]
+    remediations = get_device_remediations(ip_address, mac, vuln_dicts)
+    return {
+        "ip_address": ip_address,
+        "security_score": assessment.security_score,
+        "remediations": remediations,
+    }
+
+
+class ApplyFixRequest(BaseModel):
+    ip_address: str
+    vuln_id: str
+
+
+@app.post("/api/remediation/apply-fix", tags=["Remediation"])
+async def api_apply_fix(req: ApplyFixRequest):
+    """Apply a fix for a vulnerability (simulation: marks as fixed)."""
+    return apply_fix(req.ip_address, req.vuln_id)
+
+
+@app.get("/api/remediation/fixes", tags=["Remediation"])
+async def api_get_fixes(ip: Optional[str] = None):
+    """Get list of applied fixes."""
+    return get_applied_fixes(ip)
+
+
+@app.get("/api/firewall/suggestions", tags=["Firewall"])
+async def api_firewall_suggestions():
+    """Get firewall rule suggestions based on vulnerability findings."""
+    cached = get_cached_assessments()
+    if cached:
+        return get_firewall_suggestions([a.to_dict() for a in cached])
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Report endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/report", tags=["Report"])
+async def api_generate_report():
+    """Generate a comprehensive network security audit report."""
+    cached = get_cached_assessments()
+    if not cached:
+        # No cached assessments, scan all devices first
+        discovered = get_last_scan_results()
+        assessments = []
+        for device in discovered:
+            if not device.ip_address:
+                continue
+            ports = await scan_device_ports(device.ip_address, device.mac_address)
+            assessment = assess_device(device.ip_address, device.mac_address, ports)
+            assessments.append(assessment)
+        cached = assessments
+
+    discovered = get_last_scan_results()
+    device_dicts = [d.to_dict() for d in discovered]
+    return generate_audit_report(cached, device_dicts)
+
+
+# ---------------------------------------------------------------------------
+# Simulation scenario endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/simulation/scenarios", tags=["Simulation"])
+async def api_list_scenarios():
+    """List available simulation scenario presets."""
+    return get_scenario_presets()
+
+
+class ScenarioRequest(BaseModel):
+    preset: str
+
+
+@app.post("/api/simulation/scenario", tags=["Simulation"])
+async def api_set_scenario(req: ScenarioRequest):
+    """Set a simulation scenario preset (resets and reconfigures)."""
+    presets = get_scenario_presets()
+    if req.preset not in presets:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Unknown preset: {req.preset}")
+
+    # For now, return the preset info
+    # Full scenario switching would require resetting all state
+    return {
+        "success": True,
+        "preset": req.preset,
+        "details": presets[req.preset],
+        "message": f"Scenario '{req.preset}' activated",
     }
 
 

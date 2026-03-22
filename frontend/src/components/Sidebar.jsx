@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   Shield,
   ShieldCheck,
@@ -17,8 +18,9 @@ import {
   BarChart3,
   ShieldAlert,
   Bell,
+  FileText,
 } from 'lucide-react'
-import { clearToken } from '../utils/api'
+import { clearToken, getAlertCounts, getHealth } from '../utils/api'
 
 const NAV_SECTIONS = [
   {
@@ -47,6 +49,12 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    title: 'Reports',
+    items: [
+      { id: 'report', label: 'Audit Report', icon: FileText },
+    ],
+  },
+  {
     title: 'Management',
     items: [
       { id: 'device-manager', label: 'Devices', icon: ServerCog },
@@ -57,6 +65,33 @@ const NAV_SECTIONS = [
 ]
 
 export default function Sidebar({ active, onNavigate, connected, onLogout }) {
+  const [alertBadge, setAlertBadge] = useState(0)
+  const [healthDot, setHealthDot] = useState('green')
+
+  useEffect(() => {
+    const loadBadges = async () => {
+      try {
+        const [counts, health] = await Promise.all([
+          getAlertCounts(),
+          getHealth(),
+        ])
+        const critical = counts?.by_severity?.CRITICAL || 0
+        const high = counts?.by_severity?.HIGH || 0
+        setAlertBadge(critical + high)
+
+        const status = health?.score?.status || 'unknown'
+        if (status === 'healthy') setHealthDot('green')
+        else if (status === 'degraded') setHealthDot('yellow')
+        else setHealthDot('red')
+      } catch {
+        // not ready
+      }
+    }
+    loadBadges()
+    const interval = setInterval(loadBadges, 15000)
+    return () => clearInterval(interval)
+  }, [])
+
   const handleLogout = () => {
     clearToken()
     onLogout()
@@ -84,6 +119,14 @@ export default function Sidebar({ active, onNavigate, connected, onLogout }) {
               <span className="text-attack-red">Disconnected</span>
             </>
           )}
+          {/* Health dot */}
+          <span
+            className={`w-2 h-2 rounded-full ml-2 ${
+              healthDot === 'green' ? 'bg-matrix-green' :
+              healthDot === 'yellow' ? 'bg-warn-yellow' : 'bg-attack-red'
+            }`}
+            title={`Network health: ${healthDot}`}
+          />
         </div>
       </div>
 
@@ -96,6 +139,7 @@ export default function Sidebar({ active, onNavigate, connected, onLogout }) {
             </div>
             {section.items.map(({ id, label, icon: Icon }) => {
               const isActive = active === id
+              const showBadge = id === 'alert-center' && alertBadge > 0
               return (
                 <button
                   key={id}
@@ -107,7 +151,12 @@ export default function Sidebar({ active, onNavigate, connected, onLogout }) {
                   }`}
                 >
                   <Icon className="w-4 h-4" />
-                  {label}
+                  <span className="flex-1 text-left">{label}</span>
+                  {showBadge && (
+                    <span className="px-1.5 py-0.5 text-[10px] font-bold bg-attack-red text-white rounded-full min-w-[18px] text-center">
+                      {alertBadge}
+                    </span>
+                  )}
                 </button>
               )
             })}

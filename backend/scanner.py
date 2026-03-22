@@ -64,41 +64,76 @@ class DiscoveredDevice:
 
 
 # ---------------------------------------------------------------------------
-# Simulated devices for demo mode
+# Simulated devices for demo mode — 18 realistic devices
 # ---------------------------------------------------------------------------
 
+# Stable MAC addresses so sniffer can reuse them
+_SIM_DEVICE_TEMPLATES = [
+    # (hostname, os_info, device_type, vendor, ports, services, method)
+    # -- 2 Routers --
+    ("Gateway-Router", "OpenWrt 23.05", "router", "TP-Link",
+     (22, 53, 80, 443), ("ssh", "dns", "http", "https"), "arp"),
+    ("Edge-Router", "MikroTik RouterOS 7.12", "router", "MikroTik",
+     (22, 23, 80, 161, 8291), ("ssh", "telnet", "http", "snmp", "winbox"), "arp"),
+    # -- 1 NAS --
+    ("NAS-Vault", "Synology DSM 7.2", "nas", "Synology",
+     (22, 80, 443, 445, 5000, 5001), ("ssh", "http", "https", "smb", "dsm", "dsm-ssl"), "ssdp"),
+    # -- 3 Servers --
+    ("Web-Server", "Ubuntu 22.04 LTS", "server", "Dell",
+     (22, 80, 443, 3306, 8080), ("ssh", "http", "https", "mysql", "tomcat"), "arp"),
+    ("DB-Server", "CentOS Stream 9", "server", "HP",
+     (22, 3306, 5432, 6379, 9090), ("ssh", "mysql", "postgresql", "redis", "prometheus"), "arp"),
+    ("File-Server", "Windows Server 2019", "server", "Dell",
+     (21, 135, 139, 445, 3389), ("ftp", "msrpc", "netbios", "smb", "rdp"), "arp"),
+    # -- 5 PCs --
+    ("Dev-Workstation", "macOS 14 Sonoma", "client", "Apple",
+     (22, 443, 548, 5353, 631), ("ssh", "https", "afp", "mdns", "cups"), "mdns"),
+    ("Office-Laptop-1", "Windows 11 Pro", "client", "Dell",
+     (135, 445, 3389, 5357), ("msrpc", "smb", "rdp", "wsd"), "arp"),
+    ("Office-Laptop-2", "Windows 10 Pro", "client", "Lenovo",
+     (135, 445, 3389), ("msrpc", "smb", "rdp"), "arp"),
+    ("Linux-Dev", "Ubuntu 24.04", "client", "Lenovo",
+     (22, 80, 8080, 5432), ("ssh", "http", "http-proxy", "postgresql"), "arp"),
+    ("Intern-PC", "Windows 11 Home", "client", "HP",
+     (135, 445, 8080, 23), ("msrpc", "smb", "http-proxy", "telnet"), "arp"),
+    # -- 2 Phones --
+    ("iPhone-Alice", "iOS 17.4", "phone", "Apple",
+     (443, 5353, 62078), ("https", "mdns", "lockdown"), "mdns"),
+    ("Galaxy-Bob", "Android 14", "phone", "Samsung",
+     (443, 5353, 8008), ("https", "mdns", "chromecast"), "mdns"),
+    # -- 2 IoT --
+    ("Smart-Thermostat", "Espressif RTOS 4.4", "iot", "Espressif (IoT)",
+     (80, 1883, 8883), ("http", "mqtt", "mqtts"), "mdns"),
+    ("Smart-Plug-Hub", "Tuya OS 3.5", "iot", "Tuya",
+     (80, 443, 6668, 8080), ("http", "https", "tuya-proto", "http-proxy"), "ssdp"),
+    # -- 1 Printer --
+    ("HP-LaserJet", "HP LaserJet FW 2.3", "printer", "HP",
+     (80, 443, 515, 631, 9100), ("http", "https", "lpd", "ipp", "jetdirect"), "ssdp"),
+    # -- 2 Cameras --
+    ("Lobby-Camera", "Hikvision FW 5.6", "camera", "Hikvision",
+     (80, 443, 554, 8000, 23), ("http", "https", "rtsp", "sdk", "telnet"), "ssdp"),
+    ("Parking-Camera", "Dahua FW 2.8", "camera", "Dahua",
+     (80, 443, 554, 37777), ("http", "https", "rtsp", "dahua-rpc"), "ssdp"),
+]
+
+# Stable MACs generated deterministically (no randomness in the base)
+_SIM_STABLE_MACS: list[str] = []
 _SIM_DISCOVERED: list[DiscoveredDevice] = []
 
 
 def _init_sim_devices() -> list[DiscoveredDevice]:
     """Generate a pool of simulated discovered devices with rich detail."""
-    global _SIM_DISCOVERED
+    global _SIM_DISCOVERED, _SIM_STABLE_MACS
     if _SIM_DISCOVERED:
         return _SIM_DISCOVERED
 
-    templates = [
-        ("Gateway Router", "OpenWrt 23.05", "router", "TP-Link", (22, 53, 80, 443), ("ssh", "dns", "http", "https"), "arp"),
-        ("Core Switch", "Cisco IOS 15.2", "switch", "Cisco", (22, 23, 80, 161), ("ssh", "telnet", "http", "snmp"), "arp"),
-        ("Web Server", "Ubuntu 22.04 LTS", "server", "Dell", (22, 80, 443, 3306, 8080), ("ssh", "http", "https", "mysql", "tomcat"), "arp"),
-        ("File Server", "Windows Server 2022", "server", "HP", (135, 139, 445, 3389), ("msrpc", "netbios", "smb", "rdp"), "arp"),
-        ("Dev Workstation", "macOS 14 Sonoma", "client", "Apple", (22, 443, 548, 5353, 631), ("ssh", "https", "afp", "mdns", "cups"), "mdns"),
-        ("Office Laptop", "Windows 11 Pro", "client", "Dell", (135, 445, 3389, 5357), ("msrpc", "smb", "rdp", "wsd"), "arp"),
-        ("Linux Dev Box", "Ubuntu 24.04", "client", "Lenovo", (22, 80, 8080, 5432), ("ssh", "http", "http-proxy", "postgresql"), "arp"),
-        ("Network Printer", "HP LaserJet FW 2.3", "printer", "HP", (80, 443, 515, 631, 9100), ("http", "https", "lpd", "ipp", "jetdirect"), "ssdp"),
-        ("NAS Storage", "Synology DSM 7.2", "nas", "Synology", (22, 80, 443, 445, 5000), ("ssh", "http", "https", "smb", "dsm"), "ssdp"),
-        ("IP Camera", "Hikvision FW 5.6", "camera", "Hikvision", (80, 443, 554, 8000), ("http", "https", "rtsp", "sdk"), "ssdp"),
-        ("Smart TV", "Tizen OS 7.0", "smart_tv", "Samsung", (8001, 8002, 9197, 5353), ("wss", "https", "dial", "mdns"), "ssdp"),
-        ("IoT Hub", "Espressif RTOS", "iot", "Espressif (IoT)", (80, 1883, 8883), ("http", "mqtt", "mqtts"), "mdns"),
-        ("Smart Speaker", "Fire OS 7", "iot", "Amazon Echo", (443, 8443, 55443), ("https", "https-alt", "alexa"), "ssdp"),
-        ("Mesh AP", "UniFi 7.1", "access_point", "Ubiquiti", (22, 80, 443, 8443), ("ssh", "http", "https", "unifi"), "arp"),
-        ("Phone-Alice", "iOS 17", "phone", "Apple", (443, 5353, 62078), ("https", "mdns", "lockdown"), "mdns"),
-        ("Phone-Bob", "Android 14", "phone", "Samsung", (443, 5353, 8008), ("https", "mdns", "chromecast"), "mdns"),
-    ]
-
     devices = []
-    for i, (hostname, os_info, dev_type, vendor, ports, services, method) in enumerate(templates):
-        mac = f"AA:BB:CC:{i:02X}:{random.randint(0, 255):02X}:{random.randint(0, 255):02X}"
+    macs = []
+    for i, (hostname, os_info, dev_type, vendor, ports, services, method) in enumerate(_SIM_DEVICE_TEMPLATES):
+        # Deterministic MAC based on index (stable across restarts within same session)
+        mac = f"AA:BB:CC:{i:02X}:{(i * 17 + 42) % 256:02X}:{(i * 31 + 7) % 256:02X}"
         ip = f"192.168.1.{10 + i}"
+        macs.append(mac)
         devices.append(DiscoveredDevice(
             mac_address=mac,
             ip_address=ip,
@@ -111,8 +146,23 @@ def _init_sim_devices() -> list[DiscoveredDevice]:
             discovery_method=method,
         ))
 
+    _SIM_STABLE_MACS = macs
     _SIM_DISCOVERED = devices
     return devices
+
+
+def get_sim_mac_ip_map() -> dict[str, str]:
+    """Return {MAC: IP} mapping for simulation devices. Used by sniffer."""
+    if not _SIM_DISCOVERED:
+        _init_sim_devices()
+    return {d.mac_address: d.ip_address for d in _SIM_DISCOVERED}
+
+
+def get_sim_devices() -> list[DiscoveredDevice]:
+    """Return all simulation devices. Used by bootstrap."""
+    if not _SIM_DISCOVERED:
+        _init_sim_devices()
+    return list(_SIM_DISCOVERED)
 
 
 # ---------------------------------------------------------------------------

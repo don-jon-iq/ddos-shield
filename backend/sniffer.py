@@ -263,21 +263,18 @@ def _start_real_capture(counters: dict[str, _MacCounters], stop_event: asyncio.E
 # ---------------------------------------------------------------------------
 
 # Pre-generated fake MAC addresses and their IPs for simulation
+# These are now sourced from scanner.py for consistency
 _SIM_MACS: list[str] = []
 _SIM_MAC_IPS: dict[str, str] = {}
 _SIM_ATTACKERS: set[str] = set()
 
 
 def _init_sim_macs():
-    """Generate a pool of simulated device MACs with corresponding IPs."""
+    """Load simulated device MACs from the scanner module for consistency."""
     global _SIM_MACS, _SIM_MAC_IPS, _SIM_ATTACKERS
-    _SIM_MACS = [
-        f"AA:BB:CC:{i:02X}:{random.randint(0, 255):02X}:{random.randint(0, 255):02X}"
-        for i in range(config.simulation.device_count)
-    ]
-    _SIM_MAC_IPS = {
-        mac: f"192.168.1.{10 + i}" for i, mac in enumerate(_SIM_MACS)
-    }
+    from scanner import get_sim_mac_ip_map
+    _SIM_MAC_IPS = get_sim_mac_ip_map()
+    _SIM_MACS = list(_SIM_MAC_IPS.keys())
     _SIM_ATTACKERS = set()
 
 
@@ -379,7 +376,7 @@ class PacketSniffer:
             _init_sim_macs()
             logger.info(
                 "Simulation mode: %d devices, attack_prob=%.2f",
-                config.simulation.device_count,
+                len(_SIM_MACS),
                 config.simulation.attack_probability,
             )
             self._capture_task = asyncio.create_task(self._simulation_loop())

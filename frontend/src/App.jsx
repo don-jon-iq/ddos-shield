@@ -19,6 +19,7 @@ import BandwidthMonitor from './components/BandwidthMonitor'
 import SecurityAudit from './components/SecurityAudit'
 import AlertCenter from './components/AlertCenter'
 import DeviceDetail from './components/DeviceDetail'
+import ReportPage from './components/ReportPage'
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(isAuthenticated())
@@ -58,6 +59,8 @@ export default function App() {
         return <SecurityAudit onDeviceClick={openDeviceDetail} />
       case 'alert-center':
         return <AlertCenter />
+      case 'report':
+        return <ReportPage />
       case 'device-detail':
         return (
           <DeviceDetail
